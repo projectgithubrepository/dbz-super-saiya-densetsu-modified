@@ -462,3 +462,115 @@ mod tests {
         assert!(volume.slices.iter().all(|slice| slice.pixels[1][3] == 0));
     }
 }
+
+
+/// Perspective camera for the sprite-stack renderer. The camera looks toward the model origin;
+/// distance and focal length are measured in source pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PerspectiveCamera {
+    /// Horizontal camera orbit around the model, in radians.
+    pub yaw: f32,
+    /// Vertical camera orbit around the model, in radians.
+    pub pitch: f32,
+    /// Distance from the model centre. Must be positive and greater than the near plane.
+    pub distance: f32,
+    /// Focal length in output pixels.
+    pub focal_length: f32,
+    /// Output dimensions.
+    pub width: usize,
+    pub height: usize,
+    /// Minimum camera-space depth accepted by the projection.
+    pub near_plane: f32,
+}
+
+impl Default for PerspectiveCamera {
+    fn default() -> Self {
+        Self {
+            yaw: 0.72,
+            pitch: 0.42,
+            distance: 96.0,
+            focal_length: 96.0,
+            width: 256,
+            height: 224,
+            near_plane: 0.1,
+        }
+    }
+}
+
+/// Projects authored sprite-stack voxels with a perspective camera and a per-pixel depth buffer.
+///
+/// Unlike silhouette extrusion, this renderer expects the input slices to describe actual
+/// cross-sections. It never creates side pixels or darkens rear copies: visible colour always
+/// comes from the nearest source voxel. The output is independent of the SNES frame dimensions,
+/// so a model can be rendered at a different scale and composited over the original background.
+pub fn project_perspective(
+    volume: &SpriteVolume,
+    camera: PerspectiveCamera,
+) -> Result<RgbaFrame, VolumeError> {
+    if volume.width == 0 || volume.height == 0 || volume.slices.is_empty() {
+        return Err(VolumeError::EmptyFrame);
+    }
+    if camera.width == 0 || camera.height == 0
+        || !camera.yaw.is_finite() || !camera.pitch.is_finite()
+        || !camera.distance.is_finite() || !camera.focal_length.is_finite()
+        || !camera.near_plane.is_finite()
+        || camera.distance <= camera.near_plane || camera.focal_length <= 0.0
+        || camera.near_plane <= 0.0
+    {
+        return Err(VolumeError::InvalidCamera);
+    }
+    let source_count = volume.width.checked_mul(volume.height)
+        .ok_or(VolumeError::DimensionsOverflow)?;
+    if volume.slices.iter().any(|slice| {
+        slice.width != volume.width || slice.height != volume.height
+            || slice.pixels.len() != source_count
+    }) {
+        return Err(VolumeError::PixelCountMismatch {
+            expected: source_count,
+            actual: volume.slices.first().map_or(0, |slice| slice.pixels.len()),
+        });
+    }
+    let output_count = camera.width.checked_mul(camera.height)
+        .ok_or(VolumeError::DimensionsOverflow)?;
+    let mut pixels = vec![[0, 0, 0, 0]; output_count];
+    let mut depth = vec![f32::INFINITY; output_count];
+    let (sy, cy) = camera.yaw.sin_cos();
+    let (sp, cp) = camera.pitch.sin_cos();
+    let cx = (volume.width as f32 - 1.0) * 0.5;
+    let cy0 = (volume.height as f32 - 1.0) * 0.5;
+    let cz = (volume.slices.len() as f32 - 1.0) * 0.5;
+    let out_cx = (camera.width as f32 - 1.0) * 0.5;
+    let out_cy = (camera.height as f32 - 1.0) * 0.5;
+
+    // Iterate far-to-near for deterministic ties; the z-buffer still decides visibility.
+    for slice in &volume.slices {
+        let z = slice.z as f32 - cz;
+        for (index, &pixel) in slice.pixels.iter().enumerate() {
+            if pixel[3] == 0 { continue; }
+            let x = index % volume.width;
+            let y = index / volume.width;
+            let px = x as f32 - cx;
+            let py = cy0 - y as f32;
+
+            // Orbit the camera around the vertical stack axis, then pitch toward the model.
+            let horizontal = px * cy - z * sy;
+            let depth_yaw = px * sy + z * cy;
+            let vertical = py * cp - depth_yaw * sp;
+            let depth_pitch = py * sp + depth_yaw * cp;
+            let camera_z = camera.distance - depth_pitch;
+            if camera_z <= camera.near_plane { continue; }
+
+            let sx = (out_cx + horizontal * camera.focal_length / camera_z).round() as i32;
+            let screen_y = (out_cy - vertical * camera.focal_length / camera_z).round() as i32;
+            if sx < 0 || screen_y < 0 || sx >= camera.width as i32
+                || screen_y >= camera.height as i32
+            { continue; }
+            let at = screen_y as usize * camera.width + sx as usize;
+            if camera_z < depth[at] {
+                depth[at] = camera_z;
+                pixels[at] = pixel;
+            }
+        }
+    }
+    RgbaFrame::new(camera.width, camera.height, pixels)
+}
