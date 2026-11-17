@@ -7,6 +7,7 @@ on:
       - feature/sprite-stacking-foundation
     paths:
       - "crates/ssd-hd/**"
+      - "crates/ssd-app/**"
       - ".github/workflows/sprite-volume-demo.yml"
       - "Cargo.toml"
   workflow_dispatch:
