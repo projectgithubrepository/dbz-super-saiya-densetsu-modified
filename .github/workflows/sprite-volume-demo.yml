@@ -1,5 +1,5 @@
 name: DBZ sprite-stack Windows build
-# Build and test the actual live-game sprite-stack renderer.
+# Build the playable Windows game and run the sprite-stack renderer tests.
 
 on:
   push:
@@ -31,21 +31,12 @@ jobs:
       - name: Build the playable Windows game
         run: cargo build -p ssd-app --release --bin ssd-recompiled
 
-      - name: Build the sprite-volume utility
-        run: cargo build -p ssd-hd --bin sprite-volume-demo
-
-      - name: Render sample image
-        run: cargo run -p ssd-hd --bin sprite-volume-demo -- sprite-volume-demo.png
-
       - name: Run sprite-stack tests
         run: cargo test -p ssd-hd
 
-      - name: Upload executable and preview
+      - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
           name: dbz-sprite-stack-windows
-          path: |
-            target/release/ssd-recompiled.exe
-            target/debug/sprite-volume-demo.exe
-            sprite-volume-demo.png
+          path: target/release/ssd-recompiled.exe
           if-no-files-found: error
