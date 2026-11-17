@@ -1224,7 +1224,7 @@ fn apply_sprite_stacks(log: &FrameLog, frame: &mut Frame, additional_hidden: u12
         };
         let Ok(projected) = project_perspective(&volume, camera) else { continue };
         mask |= pose.sprites;
-        draws.push((pose.org.0 - PAD as i32, pose.org.1 - PAD as i32, projected));
+        draws.push((pose.first, pose.org.0 - PAD as i32, pose.org.1 - PAD as i32, projected));
     }
 
     if mask == 0 { return 0; }
@@ -1233,7 +1233,8 @@ fn apply_sprite_stacks(log: &FrameLog, frame: &mut Frame, additional_hidden: u12
     let Ok(background) = background_renderer.render(log) else { return 0 };
     frame.pixels.copy_from_slice(&background.pixels);
 
-    for (left, top, projected) in draws {
+    draws.sort_by_key(|(first, _, _, _)| std::cmp::Reverse(*first));
+    for (_, left, top, projected) in draws {
         for y in 0..projected.height {
             let screen_y = top + y as i32;
             if screen_y < 0 || screen_y >= frame.height as i32 { continue; }
