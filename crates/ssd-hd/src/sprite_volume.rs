@@ -49,6 +49,7 @@ pub enum VolumeError {
     DepthMapSizeMismatch { expected: usize, actual: usize },
     ZeroDepthLayers,
     ZeroThickness,
+    MissingSourceMap,
 }
 
 impl std::fmt::Display for VolumeError {
@@ -62,6 +63,7 @@ impl std::fmt::Display for VolumeError {
                 write!(f, "expected {expected} depth values, got {actual}"),
             Self::ZeroDepthLayers => f.write_str("depth_layers must be greater than zero"),
             Self::ZeroThickness => f.write_str("thickness must be greater than zero"),
+            Self::MissingSourceMap => f.write_str("the rendered frame has no source map; use Renderer::render_bound"),
         }
     }
 }
@@ -118,6 +120,54 @@ impl SpriteVolume {
         }
 
         Ok(Self { width: frame.width, height: frame.height, slices })
+    }
+
+    /// Extracts the SNES object pixels from a frame produced by `Renderer::render_bound`.
+    ///
+    /// The renderer's source map identifies pixels drawn by OAM objects. Backgrounds and
+    /// transparent pixels are discarded. Until a hand-authored depth map is supplied, depth is
+    /// estimated from vertical position (upper pixels farther back, lower pixels closer).
+    /// This is a bridge from the existing renderer, not a change to its normal 2D output.
+    pub fn from_object_frame(
+        frame: &crate::Frame,
+        depth_layers: usize,
+        thickness: usize,
+    ) -> Result<Self, VolumeError> {
+        let expected = frame.width.checked_mul(frame.height)
+            .ok_or(VolumeError::DimensionsOverflow)?;
+        if frame.sources.is_empty() {
+            return Err(VolumeError::MissingSourceMap);
+        }
+        if frame.pixels.len() != expected {
+            return Err(VolumeError::PixelCountMismatch {
+                expected,
+                actual: frame.pixels.len(),
+            });
+        }
+        if frame.sources.len() != expected {
+            return Err(VolumeError::DepthMapSizeMismatch {
+                expected,
+                actual: frame.sources.len(),
+            });
+        }
+
+        let mut pixels = vec![[0, 0, 0, 0]; expected];
+        let mut depth_map = vec![0; expected];
+        for index in 0..expected {
+            if matches!(frame.sources[index], crate::Source::Char { object: true, .. }) {
+                let color = frame.pixels[index];
+                pixels[index] = [color.r, color.g, color.b, color.a];
+                let y = index / frame.width;
+                depth_map[index] = if frame.height <= 1 {
+                    128
+                } else {
+                    (y * 255 / (frame.height - 1)) as u8
+                };
+            }
+        }
+
+        let source = RgbaFrame::new(frame.width, frame.height, pixels)?;
+        Self::from_depth_map(&source, &depth_map, depth_layers, thickness)
     }
 
     /// Uniform-depth fallback for frames without a depth map.
