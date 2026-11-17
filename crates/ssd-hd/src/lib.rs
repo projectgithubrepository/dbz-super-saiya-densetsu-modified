@@ -33,6 +33,7 @@ pub mod png;
 mod pool;
 mod screen;
 mod sprites;
+pub mod sprite_volume;
 mod tooltip;
 mod transfer;
 pub mod translate;
