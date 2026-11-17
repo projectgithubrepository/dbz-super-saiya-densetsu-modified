@@ -953,19 +953,16 @@ impl WideRenderer {
 /// Each entity gets its own pivot, padded voxel stack and depth buffer; the Mode 7 plane and all
 /// non-object pixels remain on the original renderer path. A clean background render supplies the
 /// pixels under the projected entities. Unsupported or incomplete captures keep the normal frame.
+/// Rebuilds each flight OAM entity as a variable-thickness sprite stack and projects it
+/// with perspective. The Mode 7 plane and all non-object pixels remain on the original path.
 fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame) {
     use crate::art::poses::{self, View};
-    use crate::sprite_volume::{RgbaFrame, SpriteVolume, VolumeCamera};
+    use crate::sprite_volume::{PerspectiveCamera, RgbaFrame, SpriteVolume, VolumeSlice};
 
-    // Segment the OAM into the same independent, connected entities used by the game's art
-    // pipeline. Never extrude the complete OAM image: unrelated objects must not share a pivot.
     let entities = poses::entity_poses_in(log, &View::window());
-    if entities.is_empty() {
-        return;
-    }
+    if entities.is_empty() { return; }
 
-    // Re-render only the Mode 7/background picture. The wide renderer's two outer margins remain
-    // untouched; this 256-pixel background is put back under the entities in the logical window.
+    // Preserve the cartridge's Mode 7 background while clearing only OAM objects.
     let mut background_log = log.clone();
     for sprite in 0..128 {
         background_log.oam_low[sprite * 4 + 1] = 0xF0;
@@ -974,11 +971,8 @@ fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame) {
     let Ok(background) = Renderer::new().render(&background_log) else { return };
 
     let frame_width = wide.frame.width;
-    let window_x = wide.logical.x;
-    let window_x = window_x.max(0) as usize;
-    if window_x + background.width > frame_width {
-        return;
-    }
+    let window_x = wide.logical.x.max(0) as usize;
+    if window_x + background.width > frame_width { return; }
     let height = wide.frame.height.min(background.height);
     for y in 0..height {
         let target = y * frame_width + window_x;
@@ -987,58 +981,115 @@ fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame) {
             .copy_from_slice(&background.pixels[source..source + background.width]);
     }
 
-    // OAM entry zero is in front of later entries. Draw groups in reverse order so that the
-    // original SNES ordering is preserved when projected entities overlap.
+    // Draw entities in reverse OAM order: object zero remains visually foremost.
     for entity in entities.iter().rev() {
-        // Padding gives the oblique projection room to expose the side without clipping the
-        // entity's silhouette at its original bounding box.
-        const PAD: usize = 16;
-        let padded_width = entity.w + PAD * 2;
-        let padded_height = entity.h + PAD * 2;
-        let mut rgba = vec![[0, 0, 0, 0]; padded_width * padded_height];
+        const PAD: usize = 18;
+        let width = entity.w + PAD * 2;
+        let height_src = entity.h + PAD * 2;
+        let mut rgba = vec![[0, 0, 0, 0]; width * height_src];
         for (at, &index) in entity.arr.iter().enumerate() {
-            if index == 0 {
-                continue;
-            }
+            if index == 0 { continue; }
             let cgram = 128 + usize::from(entity.palette) * 16 + usize::from(index);
-            let Some(&colour) = log.cgram_start.get(cgram) else {
-                continue;
-            };
+            let Some(&colour) = log.cgram_start.get(cgram) else { continue };
             let [r, g, b] = poses::rgb555(colour);
             let x = at % entity.w + PAD;
             let y = at / entity.w + PAD;
-            rgba[y * padded_width + x] = [r, g, b, 255];
+            rgba[y * width + x] = [r, g, b, 255];
         }
-        let Ok(source) = RgbaFrame::new(padded_width, padded_height, rgba) else { continue };
+        let Ok(source) = RgbaFrame::new(width, height_src, rgba) else { continue };
 
-        // Each entity becomes its own shaded stack. A wider oblique angle reveals the side faces;
-        // the frontmost slice keeps the original SNES palette exactly.
-        let Ok(volume) = SpriteVolume::extrude_shaded(&source, 16, 0.58) else { continue };
-        let camera = VolumeCamera { yaw: 0.58, pitch: 0.12, scale: 1.0 };
-        let Ok(projected) = volume.project(camera) else { continue };
+        // Estimate a rounded solid from the silhouette. Interior pixels occupy more depth
+        // layers than contour pixels, producing real cross-sections instead of dark duplicate
+        // sprites. Transparent holes and gaps remain empty through the distance transform.
+        const MAX_HALF_DEPTH: usize = 7;
+        let mut distance = vec![u16::MAX; width * height_src];
+        let mut queue = std::collections::VecDeque::new();
+        for y in 0..height_src {
+            for x in 0..width {
+                let at = y * width + x;
+                if source.pixels[at][3] == 0 {
+                    distance[at] = 0;
+                    queue.push_back(at);
+                }
+            }
+        }
+        // The padded image boundary is also outside the solid.
+        for x in 0..width {
+            for y in [0, height_src - 1] {
+                let at = y * width + x;
+                if distance[at] != 0 { distance[at] = 0; queue.push_back(at); }
+            }
+        }
+        for y in 0..height_src {
+            for x in [0, width - 1] {
+                let at = y * width + x;
+                if distance[at] != 0 { distance[at] = 0; queue.push_back(at); }
+            }
+        }
+        while let Some(at) = queue.pop_front() {
+            let next = distance[at].saturating_add(1);
+            let x = at % width;
+            let y = at / width;
+            let neighbours = [
+                (x > 0).then_some(at.wrapping_sub(1)),
+                (x + 1 < width).then_some(at + 1),
+                (y > 0).then_some(at.wrapping_sub(width)),
+                (y + 1 < height_src).then_some(at + width),
+            ];
+            for neighbour in neighbours.into_iter().flatten() {
+                if next < distance[neighbour] {
+                    distance[neighbour] = next;
+                    queue.push_back(neighbour);
+                }
+            }
+        }
+
+        let half_depth = distance.iter().copied().filter(|d| *d != u16::MAX)
+            .max().unwrap_or(1).min(MAX_HALF_DEPTH as u16) as usize;
+        let layers = half_depth * 2 + 1;
+        let mut slices = (0..layers).map(|z| VolumeSlice {
+            z, width, height: height_src, pixels: vec![[0, 0, 0, 0]; width * height_src],
+        }).collect::<Vec<_>>();
+        for at in 0..source.pixels.len() {
+            let pixel = source.pixels[at];
+            if pixel[3] == 0 { continue; }
+            let depth = usize::from(distance[at]).min(half_depth).max(1);
+            let first = half_depth.saturating_sub(depth);
+            let last = (half_depth + depth).min(layers - 1);
+            for slice in &mut slices[first..=last] {
+                slice.pixels[at] = pixel;
+            }
+        }
+        let volume = SpriteVolume { width, height: height_src, slices };
+        let focal = (width.max(height_src) as f32) * 2.2;
+        let camera = PerspectiveCamera {
+            yaw: 0.78,
+            pitch: 0.18,
+            distance: focal * 2.8,
+            focal_length: focal,
+            width,
+            height: height_src,
+            near_plane: 0.1,
+        };
+        let Ok(projected) = crate::sprite_volume::project_perspective(&volume, camera) else { continue };
 
         let left = window_x as i32 + entity.org.0 - PAD as i32;
         let top = entity.org.1 - PAD as i32;
         for y in 0..projected.height {
             let screen_y = top + y as i32;
-            if screen_y < 0 || screen_y >= height as i32 {
-                continue;
-            }
+            if screen_y < 0 || screen_y >= height as i32 { continue; }
             for x in 0..projected.width {
                 let screen_x = left + x as i32;
-                if screen_x < 0 || screen_x >= frame_width as i32 {
-                    continue;
-                }
+                if screen_x < 0 || screen_x >= frame_width as i32 { continue; }
                 let pixel = projected.pixels[y * projected.width + x];
-                if pixel[3] == 0 {
-                    continue;
-                }
+                if pixel[3] == 0 { continue; }
                 wide.frame.pixels[screen_y as usize * frame_width + screen_x as usize] =
                     Color::rgb(pixel[0], pixel[1], pixel[2]);
             }
         }
     }
 }
+
 /// Whether the environment asks for every frame in one piece (`SSD_HD_SERIAL`).
 fn serial_env() -> bool {
     // (read once: the environment does not change while a run draws)
