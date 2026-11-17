@@ -989,31 +989,35 @@ fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame) {
     // OAM entry zero is in front of later entries. Draw groups in reverse order so that the
     // original SNES ordering is preserved when projected entities overlap.
     for entity in entities.iter().rev() {
-        let mut rgba = Vec::with_capacity(entity.w * entity.h);
-        for &index in &entity.arr {
+        // Padding gives the oblique projection room to expose the side without clipping the
+        // entity's silhouette at its original bounding box.
+        const PAD: usize = 16;
+        let padded_width = entity.w + PAD * 2;
+        let padded_height = entity.h + PAD * 2;
+        let mut rgba = vec![[0, 0, 0, 0]; padded_width * padded_height];
+        for (at, &index) in entity.arr.iter().enumerate() {
             if index == 0 {
-                rgba.push([0, 0, 0, 0]);
                 continue;
             }
             let cgram = 128 + usize::from(entity.palette) * 16 + usize::from(index);
             let Some(&colour) = log.cgram_start.get(cgram) else {
-                rgba.push([0, 0, 0, 0]);
                 continue;
             };
             let [r, g, b] = poses::rgb555(colour);
-            rgba.push([r, g, b, 255]);
+            let x = at % entity.w + PAD;
+            let y = at / entity.w + PAD;
+            rgba[y * padded_width + x] = [r, g, b, 255];
         }
-        let Ok(source) = RgbaFrame::new(entity.w, entity.h, rgba) else { continue };
+        let Ok(source) = RgbaFrame::new(padded_width, padded_height, rgba) else { continue };
 
-        // A shallow stack gives the silhouette real thickness while keeping the original sprite
-        // recognisable. The low-angle camera exposes the stack's side instead of flattening the
-        // character with a steep isometric rotation.
-        let Ok(volume) = SpriteVolume::extrude(&source, 12) else { continue };
-        let camera = VolumeCamera { yaw: 0.34, pitch: 0.08, scale: 1.0 };
+        // Each entity becomes its own shaded stack. A wider oblique angle reveals the side faces;
+        // the frontmost slice keeps the original SNES palette exactly.
+        let Ok(volume) = SpriteVolume::extrude_shaded(&source, 16, 0.58) else { continue };
+        let camera = VolumeCamera { yaw: 0.58, pitch: 0.12, scale: 1.0 };
         let Ok(projected) = volume.project(camera) else { continue };
 
-        let left = window_x as i32 + entity.org.0;
-        let top = entity.org.1;
+        let left = window_x as i32 + entity.org.0 - PAD as i32;
+        let top = entity.org.1 - PAD as i32;
         for y in 0..projected.height {
             let screen_y = top + y as i32;
             if screen_y < 0 || screen_y >= height as i32 {
