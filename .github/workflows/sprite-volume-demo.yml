@@ -33,7 +33,7 @@ jobs:
         run: cargo build -p ssd-app --release --bin ssd-recompiled
 
       - name: Run sprite-stack tests
-        run: cargo test -p ssd-hd
+        run: cargo test -p ssd-hd silhouette_tests
 
       - name: Upload executable
         uses: actions/upload-artifact@v4
