@@ -29,17 +29,17 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build Windows executable
-        run: cargo build --release -p ssd-hd --bin sprite-volume-demo
+        run: cargo build -p ssd-hd --bin sprite-volume-demo
 
       - name: Render sample image
-        run: cargo run --release -p ssd-hd --bin sprite-volume-demo -- sprite-volume-demo.png
+        run: cargo run -p ssd-hd --bin sprite-volume-demo -- sprite-volume-demo.png
 
       - name: Upload executable and preview
         uses: actions/upload-artifact@v4
         with:
           name: sprite-volume-demo-windows
           path: |
-            target/release/sprite-volume-demo.exe
+            target/debug/sprite-volume-demo.exe
             sprite-volume-demo.png
           if-no-files-found: error
 
