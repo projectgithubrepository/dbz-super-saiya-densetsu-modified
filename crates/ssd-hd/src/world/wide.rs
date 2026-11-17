@@ -937,7 +937,9 @@ impl WideRenderer {
             })
             .collect();
         wide.frame = frame;
-        if scene == Scene::Flight && self.flight_volumes {
+        // Free flight is the field scene with the cartridge's $01BC flight bit set; story
+        // transitions use the separate Mode 7 scene. Both need the same volumetric OAM pass.
+        if self.flight_volumes && (scene == Scene::Flight || state.is_some_and(|field| field.flying)) {
             project_flight_objects(log, &mut wide);
         }
         self.extras = extras;
