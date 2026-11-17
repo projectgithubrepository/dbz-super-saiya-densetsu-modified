@@ -6,11 +6,13 @@
 //! wide frame cannot change what the game does.
 
 mod check;
+mod flight;
 mod map;
 mod objects;
 mod wide;
 
 pub use check::{ObjectCheck, TileCheck, TileDifference, check_objects, check_tiles};
+pub use flight::{FlightCamera, FlightConfig, FlightInput, FlightState3D, Vec3};
 pub use map::{FieldMap, FieldState, Rom, is_field_mode};
 pub use objects::{MapObject, Part, metasprite};
 pub use wide::{
