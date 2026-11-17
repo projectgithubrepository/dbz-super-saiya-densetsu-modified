@@ -957,6 +957,7 @@ fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame) {
     let mut binder = Binder::new(&index);
     let Ok(objects) = Renderer::new().render_bound(log, &mut binder) else { return };
     let Ok(volume) = SpriteVolume::from_object_frame(&objects, 16, 2) else { return };
+    if volume.voxel_count() == 0 { return; }
     let Ok(projected) = volume.project(VolumeCamera::default()) else { return };
 
     let mut background_log = log.clone();
