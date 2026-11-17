@@ -11,6 +11,10 @@ on:
       - "Cargo.toml"
   workflow_dispatch:
 
+concurrency:
+  group: sprite-volume-demo-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
