@@ -1,5 +1,5 @@
-name: Sprite volume demo
-# CI builds the standalone preview executable for evaluation.
+name: DBZ sprite-stack Windows build
+# Build and test the actual live-game sprite-stack renderer.
 
 on:
   push:
@@ -12,8 +12,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: sprite-volume-demo-${{ github.ref }}
-  cancel-in-progress: true
+  group: sprite-stack-build-${{ github.run_id }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -37,15 +37,15 @@ jobs:
       - name: Render sample image
         run: cargo run -p ssd-hd --bin sprite-volume-demo -- sprite-volume-demo.png
 
+      - name: Run sprite-stack tests
+        run: cargo test -p ssd-hd
+
       - name: Upload executable and preview
         uses: actions/upload-artifact@v4
         with:
-          name: dbz-flight-3d-windows
+          name: dbz-sprite-stack-windows
           path: |
             target/release/ssd-recompiled.exe
             target/debug/sprite-volume-demo.exe
             sprite-volume-demo.png
           if-no-files-found: error
-
-      - name: Run sprite-volume tests
-        run: cargo test -p ssd-hd
