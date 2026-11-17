@@ -716,6 +716,20 @@ pub(crate) fn poses_in(log: &FrameLog, sprites: &[Sprite], view: &View) -> Vec<P
     out
 }
 
+/// The independent object groups of a frame, before any volumetric conversion.
+///
+/// Flight rendering must build one volume per connected OAM entity. Combining all object pixels
+/// into one frame-wide volume makes unrelated ships, characters and scenery share a pivot and
+/// depth buffer. The field grouping rules already used by the HD art are the authoritative
+/// segmentation: consecutive OAM runs of one palette, split into connected sprite components.
+pub(crate) fn entity_poses_in(log: &FrameLog, view: &View) -> Vec<Pose> {
+    let sprites = sprites_in(log, view);
+    field_groups(&sprites)
+        .into_iter()
+        .filter_map(|group| field_pose(&group, log, view, FIELD_MIN))
+        .collect()
+}
+
 /// The effects the sprites of the overscan band make ([`overscan_sprites_in`]): clusters of the sprites
 /// under line 224 on their own, so that the poses of the sprites above them (whose art the capture made)
 /// keep their keys. They are found only by the exact pixels the index has art for.
