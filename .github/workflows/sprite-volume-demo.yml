@@ -1,0 +1,42 @@
+name: Sprite volume demo
+
+on:
+  push:
+    branches:
+      - feature/sprite-stacking-foundation
+    paths:
+      - "crates/ssd-hd/**"
+      - ".github/workflows/sprite-volume-demo.yml"
+      - "Cargo.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-demo:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run sprite-volume tests
+        run: cargo test -p ssd-hd
+
+      - name: Build Windows executable
+        run: cargo build --release -p ssd-hd --bin sprite-volume-demo
+
+      - name: Render sample image
+        run: cargo run --release -p ssd-hd --bin sprite-volume-demo -- sprite-volume-demo.png
+
+      - name: Upload executable and preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: sprite-volume-demo-windows
+          path: |
+            target/release/sprite-volume-demo.exe
+            sprite-volume-demo.png
+          if-no-files-found: error
