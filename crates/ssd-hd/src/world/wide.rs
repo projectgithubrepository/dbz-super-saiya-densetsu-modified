@@ -957,7 +957,7 @@ impl WideRenderer {
 /// with perspective. The Mode 7 plane and all non-object pixels remain on the original path.
 fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame) {
     use crate::art::poses::{self, View};
-    use crate::sprite_volume::{PerspectiveCamera, RgbaFrame, SpriteVolume, VolumeSlice};
+    use crate::sprite_volume::{PerspectiveCamera, RgbaFrame, SpriteVolume};
 
     let entities = poses::entity_poses_in(log, &View::window());
     if entities.is_empty() { return; }
@@ -998,69 +998,7 @@ fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame) {
         }
         let Ok(source) = RgbaFrame::new(width, height_src, rgba) else { continue };
 
-        // Estimate a rounded solid from the silhouette. Interior pixels occupy more depth
-        // layers than contour pixels, producing real cross-sections instead of dark duplicate
-        // sprites. Transparent holes and gaps remain empty through the distance transform.
-        const MAX_HALF_DEPTH: usize = 7;
-        let mut distance = vec![u16::MAX; width * height_src];
-        let mut queue = std::collections::VecDeque::new();
-        for y in 0..height_src {
-            for x in 0..width {
-                let at = y * width + x;
-                if source.pixels[at][3] == 0 {
-                    distance[at] = 0;
-                    queue.push_back(at);
-                }
-            }
-        }
-        // The padded image boundary is also outside the solid.
-        for x in 0..width {
-            for y in [0, height_src - 1] {
-                let at = y * width + x;
-                if distance[at] != 0 { distance[at] = 0; queue.push_back(at); }
-            }
-        }
-        for y in 0..height_src {
-            for x in [0, width - 1] {
-                let at = y * width + x;
-                if distance[at] != 0 { distance[at] = 0; queue.push_back(at); }
-            }
-        }
-        while let Some(at) = queue.pop_front() {
-            let next = distance[at].saturating_add(1);
-            let x = at % width;
-            let y = at / width;
-            let neighbours = [
-                (x > 0).then_some(at.wrapping_sub(1)),
-                (x + 1 < width).then_some(at + 1),
-                (y > 0).then_some(at.wrapping_sub(width)),
-                (y + 1 < height_src).then_some(at + width),
-            ];
-            for neighbour in neighbours.into_iter().flatten() {
-                if next < distance[neighbour] {
-                    distance[neighbour] = next;
-                    queue.push_back(neighbour);
-                }
-            }
-        }
-
-        let half_depth = distance.iter().copied().filter(|d| *d != u16::MAX)
-            .max().unwrap_or(1).min(MAX_HALF_DEPTH as u16) as usize;
-        let layers = half_depth * 2 + 1;
-        let mut slices = (0..layers).map(|z| VolumeSlice {
-            z, width, height: height_src, pixels: vec![[0, 0, 0, 0]; width * height_src],
-        }).collect::<Vec<_>>();
-        for at in 0..source.pixels.len() {
-            let pixel = source.pixels[at];
-            if pixel[3] == 0 { continue; }
-            let depth = usize::from(distance[at]).min(half_depth).max(1);
-            let first = half_depth.saturating_sub(depth);
-            let last = (half_depth + depth).min(layers - 1);
-            for slice in &mut slices[first..=last] {
-                slice.pixels[at] = pixel;
-            }
-        }
-        let volume = SpriteVolume { width, height: height_src, slices };
+        let Ok(volume) = SpriteVolume::from_silhouette(&source, MAX_HALF_DEPTH) else { continue };
         let focal = (width.max(height_src) as f32) * 2.2;
         let camera = PerspectiveCamera {
             yaw: 0.78,
