@@ -1771,6 +1771,7 @@ struct Enhanced {
 impl Enhanced {
     fn new(options: HdOptions, rom: &[u8]) -> Self {
         let mut renderer = ssd_hd::Renderer::new();
+        renderer.set_sprite_stacking(true);
         renderer.set_art(hd_art::pack(rom));
         renderer.set_font(hd_art::font(rom));
         Self { renderer, options, refused: false }
