@@ -50,6 +50,7 @@ pub enum VolumeError {
     ZeroDepthLayers,
     ZeroThickness,
     MissingSourceMap,
+    InvalidCamera,
 }
 
 impl std::fmt::Display for VolumeError {
@@ -64,6 +65,7 @@ impl std::fmt::Display for VolumeError {
             Self::ZeroDepthLayers => f.write_str("depth_layers must be greater than zero"),
             Self::ZeroThickness => f.write_str("thickness must be greater than zero"),
             Self::MissingSourceMap => f.write_str("the rendered frame has no source map; use Renderer::render_bound"),
+            Self::InvalidCamera => f.write_str("camera angles must be finite and scale must be positive"),
         }
     }
 }
@@ -188,6 +190,89 @@ impl SpriteVolume {
     }
 }
 
+/// Camera used to project the voxel slices back into a 2D RGBA image.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VolumeCamera {
+    /// Rotation around the vertical axis, in radians.
+    pub yaw: f32,
+    /// Looking down/up angle, in radians. Positive values look down onto the volume.
+    pub pitch: f32,
+    /// Orthographic pixel scale. Values below 1 shrink the projected volume.
+    pub scale: f32,
+}
+
+impl Default for VolumeCamera {
+    fn default() -> Self {
+        Self { yaw: 0.72, pitch: 0.62, scale: 1.0 }
+    }
+}
+
+impl SpriteVolume {
+    /// Projects the real sprite voxels into a transparent 2D image using a depth buffer.
+    ///
+    /// Unlike the old preview executable, this consumes the volume extracted from a rendered
+    /// SNES frame. It does not invent character pixels. The output is suitable for compositing
+    /// over the original map/Mode 7 background.
+    pub fn project(&self, camera: VolumeCamera) -> Result<RgbaFrame, VolumeError> {
+        let count = self.width.checked_mul(self.height).ok_or(VolumeError::DimensionsOverflow)?;
+        if self.width == 0 || self.height == 0 {
+            return Err(VolumeError::EmptyFrame);
+        }
+        if self.slices.is_empty() {
+            return Err(VolumeError::ZeroDepthLayers);
+        }
+        if !camera.yaw.is_finite() || !camera.pitch.is_finite()
+            || !camera.scale.is_finite() || camera.scale <= 0.0
+        {
+            return Err(VolumeError::InvalidCamera);
+        }
+        if self.slices.iter().any(|slice| {
+            slice.width != self.width || slice.height != self.height || slice.pixels.len() != count
+        }) {
+            return Err(VolumeError::PixelCountMismatch {
+                expected: count,
+                actual: self.slices.first().map_or(0, |slice| slice.pixels.len()),
+            });
+        }
+
+        let mut output = vec![[0, 0, 0, 0]; count];
+        let mut depth_buffer = vec![f32::NEG_INFINITY; count];
+        let (sin_yaw, cos_yaw) = camera.yaw.sin_cos();
+        let (sin_pitch, cos_pitch) = camera.pitch.sin_cos();
+        let center_x = (self.width as f32 - 1.0) * 0.5;
+        let center_y = (self.height as f32 - 1.0) * 0.5;
+        let center_z = (self.slices.len() as f32 - 1.0) * 0.5;
+
+        for slice in &self.slices {
+            let z = slice.z as f32 - center_z;
+            for (index, &pixel) in slice.pixels.iter().enumerate() {
+                if pixel[3] == 0 { continue; }
+                let x = index % self.width;
+                let y = index / self.width;
+                let local_x = x as f32 - center_x;
+                let local_y = center_y - y as f32;
+
+                let rotated_x = local_x * cos_yaw - z * sin_yaw;
+                let rotated_z = local_x * sin_yaw + z * cos_yaw;
+                let projected_y = local_y * cos_pitch - rotated_z * sin_pitch;
+                let camera_depth = local_y * sin_pitch + rotated_z * cos_pitch;
+
+                let screen_x = (center_x + rotated_x * camera.scale).round() as i32;
+                let screen_y = (center_y - projected_y * camera.scale).round() as i32;
+                if screen_x < 0 || screen_y < 0
+                    || screen_x >= self.width as i32 || screen_y >= self.height as i32
+                { continue; }
+                let target = screen_y as usize * self.width + screen_x as usize;
+                if camera_depth >= depth_buffer[target] {
+                    depth_buffer[target] = camera_depth;
+                    output[target] = pixel;
+                }
+            }
+        }
+        RgbaFrame::new(self.width, self.height, output)
+    }
+}
+
 /// Failure while asking the existing HD renderer to build a sprite volume.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderVolumeError {
@@ -231,6 +316,39 @@ mod tests {
 
     fn sample_frame() -> RgbaFrame {
         RgbaFrame::new(2, 1, vec![[255, 0, 0, 255], [0, 255, 0, 0]]).unwrap()
+    }
+
+    #[test]
+    fn projection_rejects_invalid_camera_values() {
+        let volume = SpriteVolume::extrude(&sample_frame(), 2).unwrap();
+        assert_eq!(volume.project(VolumeCamera { scale: 0.0, ..VolumeCamera::default() }),
+            Err(VolumeError::InvalidCamera));
+    }
+
+    #[test]
+    fn projection_preserves_a_real_voxel_and_returns_transparent_background() {
+        let frame = RgbaFrame::new(3, 3, vec![
+            [0,0,0,0], [0,0,0,0], [0,0,0,0],
+            [0,0,0,0], [255,40,20,255], [0,0,0,0],
+            [0,0,0,0], [0,0,0,0], [0,0,0,0],
+        ]).unwrap();
+        let volume = SpriteVolume::extrude(&frame, 1).unwrap();
+        let projected = volume.project(VolumeCamera { yaw: 0.0, pitch: 0.0, scale: 1.0 }).unwrap();
+        assert_eq!(projected.pixels[4], [255,40,20,255]);
+        assert_eq!(projected.pixels.iter().filter(|p| p[3] != 0).count(), 1);
+    }
+
+    #[test]
+    fn depth_buffer_resolves_overlapping_voxels() {
+        let frame = RgbaFrame::new(3, 3, vec![
+            [0,0,0,0], [0,0,0,0], [0,0,0,0],
+            [0,0,0,0], [255,0,0,255], [0,0,0,0],
+            [0,0,0,0], [0,0,0,0], [0,0,0,0],
+        ]).unwrap();
+        let mut volume = SpriteVolume::extrude(&frame, 2).unwrap();
+        volume.slices[0].pixels[4] = [0,0,255,255];
+        let projected = volume.project(VolumeCamera { yaw: 0.0, pitch: 0.0, scale: 1.0 }).unwrap();
+        assert!(projected.pixels.iter().any(|p| *p == [255,0,0,255] || *p == [0,0,255,255]));
     }
 
     #[test]
