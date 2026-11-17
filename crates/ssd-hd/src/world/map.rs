@@ -34,6 +34,10 @@ impl Rom<'_> {
 pub(crate) const GAME_MODE: usize = 0x24;
 const CAMERA_X: usize = 0x33;
 const CAMERA_Y: usize = 0x35;
+const LEADER_X: usize = 0x1AA;
+const LEADER_Y: usize = 0x1AC;
+const FLIGHT_FLAGS: usize = 0x1BC;
+const FLYING: u8 = 0x01;
 const MAP_ID: usize = 0x1A0;
 const COPY_SELECT: usize = 0x1E7;
 const MAP_HEIGHT: usize = 0x702;
@@ -147,6 +151,10 @@ pub struct FieldState {
     pub map: FieldMap,
     /// The camera in world pixels (`$33`, `$35`).
     pub camera: (u16, u16),
+    /// The leader's world position in pixels (`$01AA`, `$01AC`).
+    pub leader: (u16, u16),
+    /// Whether the original game has flight enabled (`$01BC`, bit 0).
+    pub flying: bool,
     /// The map object table (`$1000`).
     pub(crate) objects: [[u8; OBJECT_SIZE]; OBJECT_COUNT],
 }
@@ -180,6 +188,8 @@ impl FieldState {
             copy_select: wram[COPY_SELECT],
             map,
             camera: (word(CAMERA_X), word(CAMERA_Y)),
+            leader: (word(LEADER_X), word(LEADER_Y)),
+            flying: wram[FLIGHT_FLAGS] & FLYING != 0,
             objects,
         })
     }
@@ -310,7 +320,17 @@ pub(crate) mod tests {
         assert_eq!(state.map.grid, (0x0B, 0x9234));
         assert_eq!(state.map.metatiles, (0x0C, 0xA000));
         assert_eq!(state.camera, (0x123, 0x456));
+        assert_eq!(state.leader, (0, 0));
+        assert!(!state.flying);
         assert!(state.is_field(), "bit 7 only says 'just entered'");
+        wram[LEADER_X..LEADER_X + 2].copy_from_slice(&0x0789_u16.to_le_bytes());
+        wram[LEADER_Y..LEADER_Y + 2].copy_from_slice(&0x09AB_u16.to_le_bytes());
+        wram[FLIGHT_FLAGS] = FLYING;
+        let flying = FieldState::from_wram(&wram).unwrap();
+        assert_eq!(flying.leader, (0x0789, 0x09AB));
+        assert!(flying.flying, "the original flight flag is bit 0 of $01BC");
+        wram[FLIGHT_FLAGS] = 0x20;
+        assert!(!FieldState::from_wram(&wram).unwrap().flying, "other flight flags are not flight mode");
         wram[GAME_MODE] = 0x05;
         assert!(FieldState::from_wram(&wram).unwrap().is_field(), "the map after a building");
         wram[GAME_MODE] = 0x07;
