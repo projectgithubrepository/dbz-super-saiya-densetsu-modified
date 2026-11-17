@@ -1406,8 +1406,9 @@ impl WideRun {
     #[must_use]
     pub fn new(rom: &[u8]) -> Self {
         let mut renderer = WideRenderer::new();
-        // The live game uses the experimental volumetric OAM pass only in Mode 7 flight scenes.
-        renderer.set_flight_volumes(true);
+        // Keep the live game on the original sprite renderer until per-entity 3D geometry
+        // and depth data are available. The experimental whole-frame projection distorted
+        // characters and incorrectly transformed scenery objects during flight.
         Self {
             rom: Arc::from(rom),
             renderer: Some(renderer),
