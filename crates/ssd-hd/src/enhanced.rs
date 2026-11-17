@@ -194,7 +194,9 @@ impl Renderer {
         self.capturing = true;
         self.begin_text(options);
         let frame = self.render_log(log, None, false).map(|mut frame| {
-            apply_sprite_stacks(log, &mut frame, 0);
+            if self.sprite_stacking {
+                apply_sprite_stacks(log, &mut frame, 0);
+            }
             frame
         });
         self.capturing = false;
@@ -308,7 +310,7 @@ impl Renderer {
                 return Err(reason);
             }
         };
-        let stack_mask = sprite_stack_mask(log);
+        let stack_mask = if self.sprite_stacking { sprite_stack_mask(log) } else { 0 };
         let mut found = art.find_poses(log);
         // The volumetric renderer takes ownership of the original OAM pixels for these poses.
         found.retain(|(pose, _)| pose.sprites & stack_mask == 0);
@@ -341,7 +343,9 @@ impl Renderer {
             sources: Vec::new(),
         };
         let remaining_art_mask = found.iter().fold(0_u128, |all, (pose, _)| all | pose.sprites);
-        apply_sprite_stacks(log, &mut stacked, remaining_art_mask);
+        if self.sprite_stacking {
+            apply_sprite_stacks(log, &mut stacked, remaining_art_mask);
+        }
         let shown = self.without_text(&stacked, &beneath);
         let mut hd = picture(shown.as_ref().unwrap_or(&stacked), &capture, Some(log), options);
         self.capture = capture;
