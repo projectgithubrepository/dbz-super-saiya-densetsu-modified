@@ -346,6 +346,14 @@ mod tests {
     }
 
     #[test]
+    fn shaded_extrusion_keeps_front_colour_and_darkens_rear_slices() {
+        let frame = RgbaFrame::new(1, 1, vec![[200, 100, 50, 255]]).unwrap();
+        let volume = SpriteVolume::extrude_shaded(&frame, 4, 0.5).unwrap();
+        assert_eq!(volume.slices[3].pixels[0], [200, 100, 50, 255]);
+        assert_eq!(volume.slices[0].pixels[0], [100, 50, 25, 255]);
+    }
+
+    #[test]
     fn projection_rejects_invalid_camera_values() {
         let volume = SpriteVolume::extrude(&sample_frame(), 2).unwrap();
         assert_eq!(volume.project(VolumeCamera { scale: 0.0, ..VolumeCamera::default() }),
