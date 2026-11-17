@@ -343,7 +343,7 @@ impl Renderer {
         let remaining_art_mask = found.iter().fold(0_u128, |all, (pose, _)| all | pose.sprites);
         apply_sprite_stacks(log, &mut stacked, remaining_art_mask);
         let shown = self.without_text(&stacked, &beneath);
-        let mut hd = picture(shown.as_ref().unwrap_or(drawn), &capture, Some(log), options);
+        let mut hd = picture(shown.as_ref().unwrap_or(&stacked), &capture, Some(log), options);
         self.capture = capture;
         art.compose(&mut hd, &first, &found, 0, (0, 0, WIDTH as i32, height as i32));
         self.art = Some(art);
