@@ -28,7 +28,10 @@ jobs:
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build Windows executable
+      - name: Build the playable Windows game
+        run: cargo build -p ssd-app --release --bin ssd-recompiled
+
+      - name: Build the sprite-volume utility
         run: cargo build -p ssd-hd --bin sprite-volume-demo
 
       - name: Render sample image
@@ -37,8 +40,9 @@ jobs:
       - name: Upload executable and preview
         uses: actions/upload-artifact@v4
         with:
-          name: sprite-volume-demo-windows
+          name: dbz-flight-3d-windows
           path: |
+            target/release/ssd-recompiled.exe
             target/debug/sprite-volume-demo.exe
             sprite-volume-demo.png
           if-no-files-found: error
