@@ -193,7 +193,10 @@ impl Renderer {
         self.capture = capture;
         self.capturing = true;
         self.begin_text(options);
-        let frame = self.render_log(log, None, false);
+        let frame = self.render_log(log, None, false).map(|mut frame| {
+            apply_sprite_stacks(log, &mut frame, 0);
+            frame
+        });
         self.capturing = false;
         self.text_on = false;
         let capture = std::mem::take(&mut self.capture);
@@ -305,7 +308,10 @@ impl Renderer {
                 return Err(reason);
             }
         };
-        let found = art.find_poses(log);
+        let stack_mask = sprite_stack_mask(log);
+        let mut found = art.find_poses(log);
+        // The volumetric renderer takes ownership of the original OAM pixels for these poses.
+        found.retain(|(pose, _)| pose.sprites & stack_mask == 0);
         let mut under = None;
         if !found.is_empty() {
             let after = self.obj_pixels;
@@ -328,7 +334,15 @@ impl Renderer {
         let capture = std::mem::take(&mut self.capture);
         let beneath = self.title_beneath(log, options);
         let drawn = under.as_ref().unwrap_or(&first);
-        let shown = self.without_text(drawn, &beneath);
+        let mut stacked = Frame {
+            width: drawn.width,
+            height: drawn.height,
+            pixels: drawn.pixels.clone(),
+            sources: Vec::new(),
+        };
+        let remaining_art_mask = found.iter().fold(0_u128, |all, (pose, _)| all | pose.sprites);
+        apply_sprite_stacks(log, &mut stacked, remaining_art_mask);
+        let shown = self.without_text(&stacked, &beneath);
         let mut hd = picture(shown.as_ref().unwrap_or(drawn), &capture, Some(log), options);
         self.capture = capture;
         art.compose(&mut hd, &first, &found, 0, (0, 0, WIDTH as i32, height as i32));
@@ -1081,4 +1095,157 @@ mod tests {
         let refused = Renderer::new().render_hd(&log, HdOptions { scale: 2, look: Look::Crisp });
         assert_eq!(refused, Err(Unsupported::Incomplete));
     }
+}
+
+/// Returns the OAM entries belonging to fighter and field entities eligible for sprite stacking.
+/// Effects, ground shadows, portraits and UI objects are deliberately excluded.
+fn sprite_stack_mask(log: &FrameLog) -> u128 {
+    use crate::art::poses::{self, View};
+    let view = View::window();
+    let sprites = poses::sprites_in(log, &view);
+    let poses = poses::poses_in(log, &sprites, &view);
+    let mut mask = 0_u128;
+    for pose in &poses {
+        if !(pose.fighter || pose.field) || pose.shadow || pose.cut || pose.arr.is_empty() {
+            continue;
+        }
+        let is_union = poses.iter().any(|other| {
+            other.sprites != pose.sprites
+                && other.sprites & pose.sprites == other.sprites
+                && (other.fighter || other.field) && !other.shadow
+        });
+        if !is_union { mask |= pose.sprites; }
+    }
+    mask
+}
+
+/// Projects one independent pose per connected OAM entity and replaces only those pixels.
+/// The clean PPU background is redrawn with selected OAM entries hidden, so perspective shifts
+/// do not leave the original flat sprite behind.
+fn apply_sprite_stacks(log: &FrameLog, frame: &mut Frame, additional_hidden: u128) -> u128 {
+    use crate::art::poses::{self, View};
+    use crate::sprite_volume::{project_perspective, PerspectiveCamera, RgbaFrame, SpriteVolume, VolumeSlice};
+
+    if frame.width != WIDTH || frame.height == 0 { return 0; }
+    let view = View::window();
+    let sprites = poses::sprites_in(log, &view);
+    let poses = poses::poses_in(log, &sprites, &view);
+    let mut draws = Vec::new();
+    let mut mask = 0_u128;
+    const PAD: usize = 18;
+    const MAX_HALF_DEPTH: usize = 7;
+
+    for pose in &poses {
+        if !(pose.fighter || pose.field) || pose.shadow || pose.cut || pose.arr.is_empty() {
+            continue;
+        }
+        let is_union = poses.iter().any(|other| {
+            other.sprites != pose.sprites
+                && other.sprites & pose.sprites == other.sprites
+                && (other.fighter || other.field) && !other.shadow
+        });
+        if is_union { continue; }
+
+        let width = pose.w + PAD * 2;
+        let height = pose.h + PAD * 2;
+        let mut rgba = vec![[0, 0, 0, 0]; width * height];
+        for (at, &index) in pose.arr.iter().enumerate() {
+            if index == 0 { continue; }
+            let palette_index = 128 + usize::from(pose.palette) * 16 + usize::from(index);
+            let Some(&colour) = log.cgram_start.get(palette_index) else { continue };
+            let [r, g, b] = poses::rgb555(colour);
+            let x = at % pose.w + PAD;
+            let y = at / pose.w + PAD;
+            rgba[y * width + x] = [r, g, b, 255];
+        }
+        let Ok(source) = RgbaFrame::new(width, height, rgba) else { continue };
+
+        // Interior pixels occupy more depth layers than contour pixels. Transparent holes remain
+        // empty, creating a rounded solid cross-section rather than repeated flat sprites.
+        let mut distance = vec![u16::MAX; width * height];
+        let mut queue = std::collections::VecDeque::new();
+        for (at, pixel) in source.pixels.iter().enumerate() {
+            if pixel[3] == 0 {
+                distance[at] = 0;
+                queue.push_back(at);
+            }
+        }
+        for x in 0..width {
+            for y in [0, height - 1] {
+                let at = y * width + x;
+                if distance[at] != 0 { distance[at] = 0; queue.push_back(at); }
+            }
+        }
+        for y in 0..height {
+            for x in [0, width - 1] {
+                let at = y * width + x;
+                if distance[at] != 0 { distance[at] = 0; queue.push_back(at); }
+            }
+        }
+        while let Some(at) = queue.pop_front() {
+            let next = distance[at].saturating_add(1);
+            let x = at % width;
+            let y = at / width;
+            let neighbours = [
+                (x > 0).then_some(at.wrapping_sub(1)),
+                (x + 1 < width).then_some(at + 1),
+                (y > 0).then_some(at.wrapping_sub(width)),
+                (y + 1 < height).then_some(at + width),
+            ];
+            for neighbour in neighbours.into_iter().flatten() {
+                if next < distance[neighbour] {
+                    distance[neighbour] = next;
+                    queue.push_back(neighbour);
+                }
+            }
+        }
+
+        let half_depth = distance.iter().copied().filter(|d| *d != u16::MAX)
+            .max().unwrap_or(1).min(MAX_HALF_DEPTH as u16) as usize;
+        let layers = half_depth * 2 + 1;
+        let mut slices = (0..layers).map(|z| VolumeSlice {
+            z, width, height, pixels: vec![[0, 0, 0, 0]; width * height],
+        }).collect::<Vec<_>>();
+        for at in 0..source.pixels.len() {
+            let pixel = source.pixels[at];
+            if pixel[3] == 0 { continue; }
+            let depth = usize::from(distance[at]).min(half_depth).max(1);
+            let first = half_depth.saturating_sub(depth);
+            let last = (half_depth + depth).min(layers - 1);
+            for slice in &mut slices[first..=last] {
+                slice.pixels[at] = pixel;
+            }
+        }
+        let volume = SpriteVolume { width, height, slices };
+        let focal = width.max(height) as f32 * 2.2;
+        let camera = PerspectiveCamera {
+            yaw: 0.78, pitch: 0.18, distance: focal * 2.8,
+            focal_length: focal, width, height, near_plane: 0.1,
+        };
+        let Ok(projected) = project_perspective(&volume, camera) else { continue };
+        mask |= pose.sprites;
+        draws.push((pose.org.0 - PAD as i32, pose.org.1 - PAD as i32, projected));
+    }
+
+    if mask == 0 { return 0; }
+    let mut background_renderer = Renderer::new();
+    background_renderer.hidden_objects = mask | additional_hidden;
+    let Ok(background) = background_renderer.render(log) else { return 0 };
+    frame.pixels.copy_from_slice(&background.pixels);
+
+    for (left, top, projected) in draws {
+        for y in 0..projected.height {
+            let screen_y = top + y as i32;
+            if screen_y < 0 || screen_y >= frame.height as i32 { continue; }
+            for x in 0..projected.width {
+                let screen_x = left + x as i32;
+                if screen_x < 0 || screen_x >= frame.width as i32 { continue; }
+                let pixel = projected.pixels[y * projected.width + x];
+                if pixel[3] == 0 { continue; }
+                frame.pixels[screen_y as usize * frame.width + screen_x as usize] =
+                    Color::rgb(pixel[0], pixel[1], pixel[2]);
+            }
+        }
+    }
+    mask
 }
