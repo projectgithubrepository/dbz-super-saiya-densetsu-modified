@@ -947,11 +947,12 @@ impl WideRenderer {
     }
 }
 
-/// Replaces flight OAM sprites with depth-projected volumes made from the actual SNES frame.
+/// Replaces flight OAM sprites with independently projected, shaded sprite stacks.
 ///
-/// The Mode 7 plane and all non-object pixels remain the game's own render. A second render with
-/// OAM hidden supplies the clean background under the projected sprites. Any unsupported or
-/// incomplete capture simply keeps the normal wide frame.
+/// OAM entries are first grouped into connected entities by palette and screen-space adjacency.
+/// Each entity gets its own pivot, padded voxel stack and depth buffer; the Mode 7 plane and all
+/// non-object pixels remain on the original renderer path. A clean background render supplies the
+/// pixels under the projected entities. Unsupported or incomplete captures keep the normal frame.
 fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame) {
     use crate::art::poses::{self, View};
     use crate::sprite_volume::{RgbaFrame, SpriteVolume, VolumeCamera};
