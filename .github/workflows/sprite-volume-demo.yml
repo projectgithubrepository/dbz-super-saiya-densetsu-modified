@@ -32,12 +32,12 @@ jobs:
       - name: Build the playable Windows game
         run: cargo build -p ssd-app --release --bin ssd-recompiled
 
-      - name: Run sprite-stack tests
-        run: cargo test -p ssd-hd silhouette_tests
-
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
           name: dbz-sprite-stack-windows
           path: target/release/ssd-recompiled.exe
           if-no-files-found: error
+
+      - name: Run sprite-stack tests
+        run: cargo test -p ssd-hd silhouette_tests
