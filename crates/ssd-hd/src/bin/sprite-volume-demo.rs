@@ -1,7 +1,7 @@
 //! Small Windows-friendly visual proof of concept for the sprite-volume pipeline.
 //! Run: cargo run --release -p ssd-hd --bin sprite-volume-demo -- [output.png]
 
-use ssd_hd::sprite_volume::{RgbaFrame, SpriteVolume};
+use ssd_hd::sprite_volume::{project_perspective, PerspectiveCamera, RgbaFrame, SpriteVolume};
 use std::path::PathBuf;
 
 const SPRITE_W: usize = 32;
@@ -98,8 +98,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("sprite-volume-demo.png"));
 
-    let (source, depth_map) = sample_fighter();
-    let volume = SpriteVolume::from_depth_map(&source, &depth_map, 12, 4)?;
+    let (source, _depth_map) = sample_fighter();
+    let volume = SpriteVolume::from_silhouette(&source, 7)?;
+    let projected = project_perspective(&volume, PerspectiveCamera {
+        yaw: 0.78, pitch: 0.32, distance: 220.0, focal_length: 150.0,
+        width: 96, height: 96, near_plane: 0.1,
+    })?;
 
     // Two panels: original pixel art on the left, stacked volume on the right.
     let width = 760_usize;
@@ -124,26 +128,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Isometric-ish stack: every slice is shifted, so the thickness is visible as real layers.
-    let scale = 6_usize;
-    let shift_x = 3_usize;
-    let shift_y = 2_usize;
-    let origin_x = 390_usize;
-    let origin_y = 90_usize;
-    for slice in &volume.slices {
-        let shade = 150_u16 + (slice.z as u16 * 105 / (volume.slices.len().saturating_sub(1).max(1) as u16));
-        for y in 0..slice.height {
-            for x in 0..slice.width {
-                let mut color = slice.pixels[y * slice.width + x];
-                if color[3] == 0 {
-                    continue;
-                }
-                color[0] = (u16::from(color[0]) * shade / 255) as u8;
-                color[1] = (u16::from(color[1]) * shade / 255) as u8;
-                color[2] = (u16::from(color[2]) * shade / 255) as u8;
-                let px = origin_x + x * scale + slice.z * shift_x;
-                let py = origin_y + y * scale + (volume.slices.len() - 1 - slice.z) * shift_y;
-                fill_rect(&mut canvas, width, height, px, py, scale, scale, color);
+    // Perspective render of the silhouette-derived volume, using the same projector as the game.
+    let scale = 3_usize;
+    let origin_x = 370_usize;
+    let origin_y = 70_usize;
+    for y in 0..projected.height {
+        for x in 0..projected.width {
+            let color = projected.pixels[y * projected.width + x];
+            if color[3] != 0 {
+                fill_rect(
+                    &mut canvas, width, height,
+                    origin_x + x * scale, origin_y + y * scale,
+                    scale, scale, color,
+                );
             }
         }
     }
@@ -153,6 +150,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Wrote {}", output.display());
     println!("Sprite: {}x{} | depth slices: {} | voxels: {}",
         volume.width, volume.height, volume.slices.len(), volume.voxel_count());
-    println!("This is a generated test fighter, not extracted game artwork.");
+    println!("This is a generated test fighter, rendered with the live silhouette-stack projector.");
     Ok(())
 }
