@@ -80,6 +80,15 @@ impl SpriteVolume {
     ) -> Result<Self, VolumeError> {
         let expected = frame.width.checked_mul(frame.height)
             .ok_or(VolumeError::DimensionsOverflow)?;
+        if frame.width == 0 || frame.height == 0 {
+            return Err(VolumeError::EmptyFrame);
+        }
+        if frame.pixels.len() != expected {
+            return Err(VolumeError::PixelCountMismatch {
+                expected,
+                actual: frame.pixels.len(),
+            });
+        }
         if depth_map.len() != expected {
             return Err(VolumeError::DepthMapSizeMismatch { expected, actual: depth_map.len() });
         }
