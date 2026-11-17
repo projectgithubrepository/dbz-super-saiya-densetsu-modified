@@ -1455,9 +1455,9 @@ impl WideRun {
     #[must_use]
     pub fn new(rom: &[u8]) -> Self {
         let mut renderer = WideRenderer::new();
-        // Keep the live game on the original sprite renderer until per-entity 3D geometry
-        // and depth data are available. The experimental whole-frame projection distorted
-        // characters and incorrectly transformed scenery objects during flight.
+        // Flight OAM is segmented and extruded per connected entity; backgrounds remain on the
+        // original Mode 7 path. This is the live-game path, not a standalone preview.
+        renderer.set_flight_volumes(true);
         Self {
             rom: Arc::from(rom),
             renderer: Some(renderer),
