@@ -574,3 +574,50 @@ pub fn project_perspective(
     }
     RgbaFrame::new(camera.width, camera.height, pixels)
 }
+
+
+#[cfg(test)]
+mod perspective_tests {
+    use super::*;
+
+    #[test]
+    fn perspective_projection_keeps_a_central_voxel_and_transparent_background() {
+        let frame = RgbaFrame::new(3, 3, vec![
+            [0,0,0,0], [0,0,0,0], [0,0,0,0],
+            [0,0,0,0], [220,80,30,255], [0,0,0,0],
+            [0,0,0,0], [0,0,0,0], [0,0,0,0],
+        ]).unwrap();
+        let volume = SpriteVolume::extrude(&frame, 1).unwrap();
+        let camera = PerspectiveCamera {
+            yaw: 0.0, pitch: 0.0, distance: 10.0, focal_length: 10.0,
+            width: 5, height: 5, near_plane: 0.1,
+        };
+        let rendered = project_perspective(&volume, camera).unwrap();
+        assert_eq!(rendered.pixels[12], [220,80,30,255]);
+        assert_eq!(rendered.pixels.iter().filter(|p| p[3] != 0).count(), 1);
+    }
+
+    #[test]
+    fn perspective_projection_rejects_invalid_camera_and_dimensions() {
+        let volume = SpriteVolume::extrude(
+            &RgbaFrame::new(1, 1, vec![[1,2,3,255]]).unwrap(), 1
+        ).unwrap();
+        let invalid = PerspectiveCamera { distance: 0.05, near_plane: 0.1, ..PerspectiveCamera::default() };
+        assert_eq!(project_perspective(&volume, invalid), Err(VolumeError::InvalidCamera));
+        let invalid_size = PerspectiveCamera { width: 0, ..PerspectiveCamera::default() };
+        assert_eq!(project_perspective(&volume, invalid_size), Err(VolumeError::InvalidCamera));
+    }
+
+    #[test]
+    fn perspective_depth_buffer_keeps_the_nearest_voxel() {
+        let frame = RgbaFrame::new(1, 1, vec![[255,0,0,255]]).unwrap();
+        let mut volume = SpriteVolume::extrude(&frame, 3).unwrap();
+        volume.slices[0].pixels[0] = [0,0,255,255];
+        let camera = PerspectiveCamera {
+            yaw: 0.0, pitch: 0.0, distance: 20.0, focal_length: 20.0,
+            width: 3, height: 3, near_plane: 0.1,
+        };
+        let rendered = project_perspective(&volume, camera).unwrap();
+        assert!(rendered.pixels.iter().any(|p| *p == [255,0,0,255] || *p == [0,0,255,255]));
+    }
+}
