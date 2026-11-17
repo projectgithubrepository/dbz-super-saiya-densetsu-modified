@@ -953,15 +953,18 @@ impl WideRenderer {
 /// OAM hidden supplies the clean background under the projected sprites. Any unsupported or
 /// incomplete capture simply keeps the normal wide frame.
 fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame) {
-    use crate::sprite_volume::{SpriteVolume, VolumeCamera};
+    use crate::art::poses::{self, View};
+    use crate::sprite_volume::{RgbaFrame, SpriteVolume, VolumeCamera};
 
-    let index = crate::pack::Index::new(Vec::new());
-    let mut binder = Binder::new(&index);
-    let Ok(objects) = Renderer::new().render_bound(log, &mut binder) else { return };
-    let Ok(volume) = SpriteVolume::from_object_frame(&objects, 16, 2) else { return };
-    if volume.voxel_count() == 0 { return; }
-    let Ok(projected) = volume.project(VolumeCamera::default()) else { return };
+    // Segment the OAM into the same independent, connected entities used by the game's art
+    // pipeline. Never extrude the complete OAM image: unrelated objects must not share a pivot.
+    let entities = poses::entity_poses_in(log, &View::window());
+    if entities.is_empty() {
+        return;
+    }
 
+    // Re-render only the Mode 7/background picture. The wide renderer's two outer margins remain
+    // untouched; this 256-pixel background is put back under the entities in the logical window.
     let mut background_log = log.clone();
     for sprite in 0..128 {
         background_log.oam_low[sprite * 4 + 1] = 0xF0;
@@ -969,18 +972,64 @@ fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame) {
     background_log.oam_writes.clear();
     let Ok(background) = Renderer::new().render(&background_log) else { return };
 
-    let width = wide.frame.width;
-    let height = wide.frame.height.min(projected.height).min(background.height);
-    let offset = wide.logical.x.max(0) as usize;
-    if offset + projected.width > width { return; }
+    let frame_width = wide.frame.width;
+    let window_x = wide.logical.x;
+    let window_x = window_x.max(0) as usize;
+    if window_x + background.width > frame_width {
+        return;
+    }
+    let height = wide.frame.height.min(background.height);
     for y in 0..height {
-        for x in 0..projected.width {
-            let target = y * width + offset + x;
-            let source = y * projected.width + x;
-            wide.frame.pixels[target] = background.pixels[source];
-            let pixel = projected.pixels[source];
-            if pixel[3] != 0 {
-                wide.frame.pixels[target] = Color::rgb(pixel[0], pixel[1], pixel[2]);
+        let target = y * frame_width + window_x;
+        let source = y * background.width;
+        wide.frame.pixels[target..target + background.width]
+            .copy_from_slice(&background.pixels[source..source + background.width]);
+    }
+
+    // OAM entry zero is in front of later entries. Draw groups in reverse order so that the
+    // original SNES ordering is preserved when projected entities overlap.
+    for entity in entities.iter().rev() {
+        let mut rgba = Vec::with_capacity(entity.w * entity.h);
+        for &index in &entity.arr {
+            if index == 0 {
+                rgba.push([0, 0, 0, 0]);
+                continue;
+            }
+            let cgram = 128 + usize::from(entity.palette) * 16 + usize::from(index);
+            let Some(&colour) = log.cgram_start.get(cgram) else {
+                rgba.push([0, 0, 0, 0]);
+                continue;
+            };
+            let [r, g, b] = poses::rgb555(colour);
+            rgba.push([r, g, b, 255]);
+        }
+        let Ok(source) = RgbaFrame::new(entity.w, entity.h, rgba) else { continue };
+
+        // A shallow stack gives the silhouette real thickness while keeping the original sprite
+        // recognisable. The low-angle camera exposes the stack's side instead of flattening the
+        // character with a steep isometric rotation.
+        let Ok(volume) = SpriteVolume::extrude(&source, 12) else { continue };
+        let camera = VolumeCamera { yaw: 0.34, pitch: 0.08, scale: 1.0 };
+        let Ok(projected) = volume.project(camera) else { continue };
+
+        let left = window_x as i32 + entity.org.0;
+        let top = entity.org.1;
+        for y in 0..projected.height {
+            let screen_y = top + y as i32;
+            if screen_y < 0 || screen_y >= height as i32 {
+                continue;
+            }
+            for x in 0..projected.width {
+                let screen_x = left + x as i32;
+                if screen_x < 0 || screen_x >= frame_width as i32 {
+                    continue;
+                }
+                let pixel = projected.pixels[y * projected.width + x];
+                if pixel[3] == 0 {
+                    continue;
+                }
+                wide.frame.pixels[screen_y as usize * frame_width + screen_x as usize] =
+                    Color::rgb(pixel[0], pixel[1], pixel[2]);
             }
         }
     }
