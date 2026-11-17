@@ -172,6 +172,77 @@ impl SpriteVolume {
         Self::from_depth_map(&source, &depth_map, depth_layers, thickness)
     }
 
+    /// Builds a rounded solid from a sprite silhouette using its interior distance field.
+    /// Contour pixels occupy a shallow cross-section; pixels farther from transparency occupy
+    /// more slices. This avoids copying every source pixel through a uniform stack depth.
+    pub fn from_silhouette(
+        frame: &RgbaFrame,
+        max_half_depth: usize,
+    ) -> Result<Self, VolumeError> {
+        if max_half_depth == 0 { return Err(VolumeError::ZeroDepthLayers); }
+        let count = frame.width.checked_mul(frame.height)
+            .ok_or(VolumeError::DimensionsOverflow)?;
+        if frame.width == 0 || frame.height == 0 { return Err(VolumeError::EmptyFrame); }
+        if frame.pixels.len() != count {
+            return Err(VolumeError::PixelCountMismatch { expected: count, actual: frame.pixels.len() });
+        }
+
+        let mut distance = vec![u16::MAX; count];
+        let mut queue = std::collections::VecDeque::new();
+        for (at, pixel) in frame.pixels.iter().enumerate() {
+            if pixel[3] == 0 {
+                distance[at] = 0;
+                queue.push_back(at);
+            }
+        }
+        for x in 0..frame.width {
+            for y in [0, frame.height - 1] {
+                let at = y * frame.width + x;
+                if distance[at] != 0 { distance[at] = 0; queue.push_back(at); }
+            }
+        }
+        for y in 0..frame.height {
+            for x in [0, frame.width - 1] {
+                let at = y * frame.width + x;
+                if distance[at] != 0 { distance[at] = 0; queue.push_back(at); }
+            }
+        }
+        while let Some(at) = queue.pop_front() {
+            let next = distance[at].saturating_add(1);
+            let x = at % frame.width;
+            let y = at / frame.width;
+            let neighbours = [
+                (x > 0).then_some(at.wrapping_sub(1)),
+                (x + 1 < frame.width).then_some(at + 1),
+                (y > 0).then_some(at.wrapping_sub(frame.width)),
+                (y + 1 < frame.height).then_some(at + frame.width),
+            ];
+            for neighbour in neighbours.into_iter().flatten() {
+                if next < distance[neighbour] {
+                    distance[neighbour] = next;
+                    queue.push_back(neighbour);
+                }
+            }
+        }
+
+        let half = distance.iter().copied().filter(|d| *d != u16::MAX)
+            .max().unwrap_or(1).min(max_half_depth.min(u16::MAX as usize) as u16) as usize;
+        let layers = half * 2 + 1;
+        let mut slices = (0..layers).map(|z| VolumeSlice {
+            z, width: frame.width, height: frame.height, pixels: vec![[0, 0, 0, 0]; count],
+        }).collect::<Vec<_>>();
+        for (at, &pixel) in frame.pixels.iter().enumerate() {
+            if pixel[3] == 0 { continue; }
+            let depth = usize::from(distance[at]).min(half).max(1);
+            let first = half.saturating_sub(depth);
+            let last = (half + depth).min(layers - 1);
+            for slice in &mut slices[first..=last] {
+                slice.pixels[at] = pixel;
+            }
+        }
+        Ok(Self { width: frame.width, height: frame.height, slices })
+    }
+
     /// Uniform-depth fallback for frames without a depth map.
     pub fn extrude(frame: &RgbaFrame, depth_layers: usize) -> Result<Self, VolumeError> {
         if depth_layers == 0 {
@@ -619,5 +690,32 @@ mod perspective_tests {
         };
         let rendered = project_perspective(&volume, camera).unwrap();
         assert!(rendered.pixels.iter().any(|p| *p == [255,0,0,255] || *p == [0,0,255,255]));
+    }
+}
+ 
+#[cfg(test)]
+mod silhouette_tests {
+    use super::*;
+
+    #[test]
+    fn silhouette_stack_gives_interior_pixels_more_depth_than_contour() {
+        let mut pixels = vec![[0, 0, 0, 0]; 7 * 7];
+        for y in 1..6 {
+            for x in 1..6 {
+                pixels[y * 7 + x] = [180, 90, 30, 255];
+            }
+        }
+        let frame = RgbaFrame::new(7, 7, pixels).unwrap();
+        let volume = SpriteVolume::from_silhouette(&frame, 4).unwrap();
+        let contour = volume.slices.iter().filter(|slice| slice.pixels[1 * 7 + 3][3] != 0).count();
+        let interior = volume.slices.iter().filter(|slice| slice.pixels[3 * 7 + 3][3] != 0).count();
+        assert!(interior > contour);
+        assert!(volume.slices.iter().all(|slice| slice.pixels[0][3] == 0));
+    }
+
+    #[test]
+    fn silhouette_stack_rejects_zero_depth() {
+        let frame = RgbaFrame::new(1, 1, vec![[1, 2, 3, 255]]).unwrap();
+        assert_eq!(SpriteVolume::from_silhouette(&frame, 0), Err(VolumeError::ZeroDepthLayers));
     }
 }
