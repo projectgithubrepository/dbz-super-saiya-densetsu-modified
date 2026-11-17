@@ -1,4 +1,5 @@
 name: Sprite volume demo
+# CI builds the standalone preview executable for evaluation.
 
 on:
   push:
