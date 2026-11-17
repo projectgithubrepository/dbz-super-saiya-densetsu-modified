@@ -188,6 +188,43 @@ impl SpriteVolume {
     }
 }
 
+/// Failure while asking the existing HD renderer to build a sprite volume.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderVolumeError {
+    UnsupportedFrame(crate::Unsupported),
+    Volume(VolumeError),
+}
+
+impl std::fmt::Display for RenderVolumeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedFrame(error) => write!(f, "renderer cannot draw this frame: {error}"),
+            Self::Volume(error) => write!(f, "cannot build sprite volume: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for RenderVolumeError {}
+
+impl crate::Renderer {
+    /// Renders a bound SNES frame and extracts its OAM object pixels into a depth volume.
+    ///
+    /// The normal game renderer remains unchanged; this opt-in method is for experiments,
+    /// capture tools and future volumetric rendering paths.
+    pub fn render_object_volume(
+        &mut self,
+        log: &ssd_oracle::FrameLog,
+        binder: &mut crate::Binder<'_>,
+        depth_layers: usize,
+        thickness: usize,
+    ) -> Result<SpriteVolume, RenderVolumeError> {
+        let frame = self.render_bound(log, binder)
+            .map_err(RenderVolumeError::UnsupportedFrame)?;
+        SpriteVolume::from_object_frame(&frame, depth_layers, thickness)
+            .map_err(RenderVolumeError::Volume)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
