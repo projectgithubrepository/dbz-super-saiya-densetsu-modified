@@ -1460,9 +1460,10 @@ impl WideRun {
     #[must_use]
     pub fn new(rom: &[u8]) -> Self {
         let mut renderer = WideRenderer::new();
-        // Flight OAM is segmented and extruded per connected entity; backgrounds remain on the
-        // original Mode 7 path. This is the live-game path, not a standalone preview.
-        renderer.set_flight_volumes(true);
+        // Do not enable the experimental silhouette extrusion in live gameplay. It creates
+        // dark side bands and treats portraits/effects as flat cut-outs, not sprite-stacked 3D
+        // assets. Re-enable only after semantic entity/depth data and scene-specific rendering
+        // are available; keep the original SNES presentation in the meantime.
         Self {
             rom: Arc::from(rom),
             renderer: Some(renderer),
