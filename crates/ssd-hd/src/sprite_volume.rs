@@ -231,6 +231,40 @@ mod tests {
     }
 
     #[test]
+    fn extracts_only_snes_object_pixels_from_a_bound_frame() {
+        let frame = crate::Frame {
+            width: 2,
+            height: 1,
+            pixels: vec![
+                ssd_oracle::Color::rgb(10, 20, 30),
+                ssd_oracle::Color::rgb(40, 50, 60),
+            ],
+            sources: vec![
+                crate::Source::Char { object: true, bpp: 4, address: 0, tile: None },
+                crate::Source::Backdrop,
+            ],
+        };
+        let volume = SpriteVolume::from_object_frame(&frame, 3, 1).unwrap();
+        assert_eq!(volume.voxel_count(), 1);
+        assert_eq!(volume.slices[1].pixels[0], [10, 20, 30, 255]);
+        assert_eq!(volume.slices[1].pixels[1][3], 0);
+    }
+
+    #[test]
+    fn object_extraction_requires_renderer_source_map() {
+        let frame = crate::Frame {
+            width: 1,
+            height: 1,
+            pixels: vec![ssd_oracle::Color::BLACK],
+            sources: Vec::new(),
+        };
+        assert_eq!(
+            SpriteVolume::from_object_frame(&frame, 2, 1),
+            Err(VolumeError::MissingSourceMap)
+        );
+    }
+
+    #[test]
     fn uniform_extrusion_fills_all_slices_for_opaque_pixels() {
         let volume = SpriteVolume::extrude(&sample_frame(), 3).unwrap();
         assert_eq!(volume.voxel_count(), 3);
