@@ -181,6 +181,8 @@ pub struct Renderer {
     pub(crate) only_rows: Option<(usize, usize)>,
     /// The pack's art, when the pictures draw it (see [`Renderer::set_art`]).
     pub(crate) art: Option<Box<art::ArtState>>,
+    /// Whether Enhanced frames project fighter and field entities as sprite stacks.
+    sprite_stacking: bool,
     /// The HD text font, when the pictures draw their text from it (see [`Renderer::set_font`]).
     font: Option<Arc<Font>>,
     /// The text cells of the frame being drawn, noted while `text_on`.
@@ -211,6 +213,7 @@ impl Renderer {
             hidden_objects: 0,
             only_rows: None,
             art: None,
+            sprite_stacking: false,
             font: None,
             text: font::TextCapture::default(),
             text_on: false,
@@ -222,6 +225,12 @@ impl Renderer {
     /// draws it. The 1x frame of [`Renderer::render`] never has HD text.
     pub fn set_font(&mut self, font: Option<Arc<Font>>) {
         self.font = font;
+    }
+
+    /// Enables the sprite-stack conversion of fighter and field OAM entities in Enhanced frames.
+    /// Disabled by default so the base renderer and its exact-output tests remain unchanged.
+    pub fn set_sprite_stacking(&mut self, enabled: bool) {
+        self.sprite_stacking = enabled;
     }
 
     /// Makes the Enhanced pictures ([`Renderer::render_hd`]) draw the art of `pack`; `None` (the
