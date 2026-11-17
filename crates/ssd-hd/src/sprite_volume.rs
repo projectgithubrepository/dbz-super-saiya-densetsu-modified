@@ -182,6 +182,33 @@ impl SpriteVolume {
         Self::from_depth_map(frame, &vec![255; count], depth_layers, depth_layers)
     }
 
+    /// Builds a solid sprite stack and shades the rear slices to reveal its side faces when viewed
+    /// obliquely. The front slice retains the exact source colours.
+    pub fn extrude_shaded(
+        frame: &RgbaFrame,
+        depth_layers: usize,
+        rear_brightness: f32,
+    ) -> Result<Self, VolumeError> {
+        if !rear_brightness.is_finite() || !(0.0..=1.0).contains(&rear_brightness) {
+            return Err(VolumeError::InvalidCamera);
+        }
+        let mut volume = Self::extrude(frame, depth_layers)?;
+        let denominator = (depth_layers.saturating_sub(1)).max(1) as f32;
+        for slice in &mut volume.slices {
+            let t = slice.z as f32 / denominator;
+            let brightness = rear_brightness + (1.0 - rear_brightness) * t;
+            for pixel in &mut slice.pixels {
+                if pixel[3] == 0 {
+                    continue;
+                }
+                for channel in &mut pixel[..3] {
+                    *channel = (f32::from(*channel) * brightness).round() as u8;
+                }
+            }
+        }
+        Ok(volume)
+    }
+
     /// Counts non-transparent voxels.
     pub fn voxel_count(&self) -> usize {
         self.slices.iter()
