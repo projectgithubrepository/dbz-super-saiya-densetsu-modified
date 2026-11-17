@@ -385,7 +385,7 @@ impl WideRenderer {
             text_on: false,
             text: TextCapture::default(),
             trust_field: false,
-            flight_volumes: true,
+            flight_volumes: false,
             extras: Vec::new(),
             mapped: false,
             translator: None,
