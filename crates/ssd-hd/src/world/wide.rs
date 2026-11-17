@@ -255,6 +255,8 @@ pub struct WideRenderer {
     /// Frames in a field state are drawn as the field whatever BG2 holds (see
     /// [`WideRenderer::set_trust_field`]).
     trust_field: bool,
+    /// Project flight OAM sprites as depth-buffered volumes in the live run renderer.
+    flight_volumes: bool,
     /// The objects the original drops, as the last frame composed placed them.
     extras: Vec<Extra>,
     /// The frame being drawn is a picture (a window with black beside it) that shows the field's
@@ -383,6 +385,7 @@ impl WideRenderer {
             text_on: false,
             text: TextCapture::default(),
             trust_field: false,
+            flight_volumes: false,
             extras: Vec::new(),
             mapped: false,
             translator: None,
@@ -423,6 +426,12 @@ impl WideRenderer {
     /// scene that draws its own picture on BG2.
     pub fn set_trust_field(&mut self, trust: bool) {
         self.trust_field = trust;
+    }
+
+    /// Enables depth-buffered projection of the real OAM sprites during Mode 7 flight scenes.
+    /// The ordinary field and battle render paths are unchanged.
+    pub fn set_flight_volumes(&mut self, enabled: bool) {
+        self.flight_volumes = enabled;
     }
 
     /// Makes [`WideRenderer::render_hd`] draw the art of `pack` (`None`: none).
@@ -928,11 +937,51 @@ impl WideRenderer {
             })
             .collect();
         wide.frame = frame;
+        if scene == Scene::Flight && self.flight_volumes {
+            project_flight_objects(log, &mut wide);
+        }
         self.extras = extras;
         Ok(wide)
     }
 }
 
+/// Replaces flight OAM sprites with depth-projected volumes made from the actual SNES frame.
+///
+/// The Mode 7 plane and all non-object pixels remain the game's own render. A second render with
+/// OAM hidden supplies the clean background under the projected sprites. Any unsupported or
+/// incomplete capture simply keeps the normal wide frame.
+fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame) {
+    use crate::sprite_volume::{SpriteVolume, VolumeCamera};
+
+    let index = crate::pack::Index::new(Vec::new());
+    let mut binder = Binder::new(&index);
+    let Ok(objects) = Renderer::new().render_bound(log, &mut binder) else { return };
+    let Ok(volume) = SpriteVolume::from_object_frame(&objects, 16, 2) else { return };
+    let Ok(projected) = volume.project(VolumeCamera::default()) else { return };
+
+    let mut background_log = log.clone();
+    for sprite in 0..128 {
+        background_log.oam_low[sprite * 4 + 1] = 0xF0;
+    }
+    background_log.oam_writes.clear();
+    let Ok(background) = Renderer::new().render(&background_log) else { return };
+
+    let width = wide.frame.width;
+    let height = wide.frame.height.min(projected.height).min(background.height);
+    let offset = wide.logical.x.max(0) as usize;
+    if offset + projected.width > width { return; }
+    for y in 0..height {
+        for x in 0..projected.width {
+            let target = y * width + offset + x;
+            let source = y * projected.width + x;
+            wide.frame.pixels[target] = background.pixels[source];
+            let pixel = projected.pixels[source];
+            if pixel[3] != 0 {
+                wide.frame.pixels[target] = Color::rgb(pixel[0], pixel[1], pixel[2]);
+            }
+        }
+    }
+}
 /// Whether the environment asks for every frame in one piece (`SSD_HD_SERIAL`).
 fn serial_env() -> bool {
     // (read once: the environment does not change while a run draws)
@@ -1353,9 +1402,12 @@ impl WideRun {
     /// A run of the cartridge image `rom`.
     #[must_use]
     pub fn new(rom: &[u8]) -> Self {
+        let mut renderer = WideRenderer::new();
+        // The live game uses the experimental volumetric OAM pass only in Mode 7 flight scenes.
+        renderer.set_flight_volumes(true);
         Self {
             rom: Arc::from(rom),
-            renderer: Some(WideRenderer::new()),
+            renderer: Some(renderer),
             worker: None,
             drawing: false,
             worker_start: None,
