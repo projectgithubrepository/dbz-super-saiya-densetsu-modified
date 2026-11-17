@@ -1124,7 +1124,7 @@ fn sprite_stack_mask(log: &FrameLog) -> u128 {
 /// do not leave the original flat sprite behind.
 fn apply_sprite_stacks(log: &FrameLog, frame: &mut Frame, additional_hidden: u128) -> u128 {
     use crate::art::poses::{self, View};
-    use crate::sprite_volume::{project_perspective, PerspectiveCamera, RgbaFrame, SpriteVolume, VolumeSlice};
+    use crate::sprite_volume::{project_perspective, PerspectiveCamera, RgbaFrame, SpriteVolume};
 
     if frame.width != WIDTH || frame.height == 0 { return 0; }
     let view = View::window();
@@ -1160,63 +1160,7 @@ fn apply_sprite_stacks(log: &FrameLog, frame: &mut Frame, additional_hidden: u12
         }
         let Ok(source) = RgbaFrame::new(width, height, rgba) else { continue };
 
-        // Interior pixels occupy more depth layers than contour pixels. Transparent holes remain
-        // empty, creating a rounded solid cross-section rather than repeated flat sprites.
-        let mut distance = vec![u16::MAX; width * height];
-        let mut queue = std::collections::VecDeque::new();
-        for (at, pixel) in source.pixels.iter().enumerate() {
-            if pixel[3] == 0 {
-                distance[at] = 0;
-                queue.push_back(at);
-            }
-        }
-        for x in 0..width {
-            for y in [0, height - 1] {
-                let at = y * width + x;
-                if distance[at] != 0 { distance[at] = 0; queue.push_back(at); }
-            }
-        }
-        for y in 0..height {
-            for x in [0, width - 1] {
-                let at = y * width + x;
-                if distance[at] != 0 { distance[at] = 0; queue.push_back(at); }
-            }
-        }
-        while let Some(at) = queue.pop_front() {
-            let next = distance[at].saturating_add(1);
-            let x = at % width;
-            let y = at / width;
-            let neighbours = [
-                (x > 0).then_some(at.wrapping_sub(1)),
-                (x + 1 < width).then_some(at + 1),
-                (y > 0).then_some(at.wrapping_sub(width)),
-                (y + 1 < height).then_some(at + width),
-            ];
-            for neighbour in neighbours.into_iter().flatten() {
-                if next < distance[neighbour] {
-                    distance[neighbour] = next;
-                    queue.push_back(neighbour);
-                }
-            }
-        }
-
-        let half_depth = distance.iter().copied().filter(|d| *d != u16::MAX)
-            .max().unwrap_or(1).min(MAX_HALF_DEPTH as u16) as usize;
-        let layers = half_depth * 2 + 1;
-        let mut slices = (0..layers).map(|z| VolumeSlice {
-            z, width, height, pixels: vec![[0, 0, 0, 0]; width * height],
-        }).collect::<Vec<_>>();
-        for at in 0..source.pixels.len() {
-            let pixel = source.pixels[at];
-            if pixel[3] == 0 { continue; }
-            let depth = usize::from(distance[at]).min(half_depth).max(1);
-            let first = half_depth.saturating_sub(depth);
-            let last = (half_depth + depth).min(layers - 1);
-            for slice in &mut slices[first..=last] {
-                slice.pixels[at] = pixel;
-            }
-        }
-        let volume = SpriteVolume { width, height, slices };
+        let Ok(volume) = SpriteVolume::from_silhouette(&source, MAX_HALF_DEPTH) else { continue };
         let focal = width.max(height) as f32 * 2.2;
         let camera = PerspectiveCamera {
             yaw: 0.78, pitch: 0.18, distance: focal * 2.8,
