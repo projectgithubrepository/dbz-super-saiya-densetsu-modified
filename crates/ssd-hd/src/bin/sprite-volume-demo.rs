@@ -129,9 +129,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Perspective render of the silhouette-derived volume, using the same projector as the game.
-    let scale = 6_usize;
-    let origin_x = 390_usize;
-    let origin_y = 45_usize;
+    let scale = 5_usize;
+    let origin_x = 400_usize;
+    let origin_y = 40_usize;
     for y in 0..projected.height {
         for x in 0..projected.width {
             let color = projected.pixels[y * projected.width + x];
