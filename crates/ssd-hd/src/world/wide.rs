@@ -984,6 +984,7 @@ fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame) {
     // Draw entities in reverse OAM order: object zero remains visually foremost.
     for entity in entities.iter().rev() {
         const PAD: usize = 18;
+        const MAX_HALF_DEPTH: usize = 7;
         let width = entity.w + PAD * 2;
         let height_src = entity.h + PAD * 2;
         let mut rgba = vec![[0, 0, 0, 0]; width * height_src];
