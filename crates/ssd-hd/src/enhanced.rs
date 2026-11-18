@@ -837,6 +837,15 @@ mod tests {
     }
 
     #[test]
+    fn flight_sprite_camera_preserves_near_native_sprite_scale() {
+        let focal = 128.0;
+        let distance = sprite_camera_distance(focal, true);
+        let projected_scale = focal / distance;
+        assert!(projected_scale > 0.90 && projected_scale < 1.0);
+        assert_eq!(sprite_camera_distance(focal, false), focal * 2.8);
+    }
+
+    #[test]
     fn flight_plane_has_scanline_perspective_instead_of_uniform_affine_scale() {
         let log = mode_7_log(plane_regs(256), stripes(), &cgram_identity());
         let transformed = flight_perspective_log(&log, -std::f32::consts::FRAC_PI_2);
@@ -1210,6 +1219,12 @@ fn flight_perspective_log(log: &FrameLog, heading: f32) -> FrameLog {
     adjusted
 }
 
+/// Keeps a flight sprite close to its source size while allowing the depth axis to
+/// produce visible parallax. The old 2.8x distance shrank every flight craft to roughly 36%.
+fn sprite_camera_distance(focal: f32, flight: bool) -> f32 {
+    focal * if flight { 1.05 } else { 2.8 }
+}
+
 /// Projects one independent pose per connected OAM entity and replaces only those pixels.
 /// The clean PPU background is redrawn with selected OAM entries hidden, so perspective shifts
 /// do not leave the original flat sprite behind.
@@ -1269,7 +1284,8 @@ fn apply_sprite_stacks(
         let focal = width.max(height) as f32 * 2.2;
         let camera = PerspectiveCamera {
             yaw: flight_heading.map_or(0.78, |heading| heading + std::f32::consts::FRAC_PI_2 + 0.78),
-            pitch: if flight_heading.is_some() { 0.34 } else { 0.18 }, distance: focal * 2.8,
+            pitch: if flight_heading.is_some() { 0.34 } else { 0.18 },
+            distance: sprite_camera_distance(focal, flight_heading.is_some()),
             focal_length: focal, width, height, near_plane: 0.1,
         };
         let Ok(projected) = project_perspective(&volume, camera) else { volume_failures += 1; continue };
