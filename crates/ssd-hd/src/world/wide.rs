@@ -1150,6 +1150,83 @@ impl WideRenderer {
 /// pixels under the projected entities. Unsupported or incomplete captures keep the normal frame.
 /// Rebuilds each flight OAM entity as a variable-thickness sprite stack and projects it
 /// with perspective. The Mode 7 plane and all non-object pixels remain on the original path.
+/// Writes a one-frame BMP of the original flight OAM, before any 3D projection.
+/// This makes it possible to identify whether the screen-wide OAM pattern is a character,
+/// an overlay, or another effect without guessing from palette/adjacency groups.
+fn write_flight_oam_atlas(log: &FrameLog) {
+    use crate::art::poses::{self, View};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static WRITTEN: AtomicBool = AtomicBool::new(false);
+    if WRITTEN.swap(true, Ordering::Relaxed) {
+        return;
+    }
+
+    const WIDTH: usize = 256;
+    const HEIGHT: usize = 240;
+    let sprites = poses::sprites_in(log, &View::window());
+    let row_bytes = (WIDTH * 3 + 3) & !3;
+    let image_bytes = row_bytes * HEIGHT;
+    let mut bmp = vec![0_u8; 54 + image_bytes];
+
+    bmp[0..2].copy_from_slice(b"BM");
+    bmp[2..6].copy_from_slice(&((54 + image_bytes) as u32).to_le_bytes());
+    bmp[10..14].copy_from_slice(&54_u32.to_le_bytes());
+    bmp[14..18].copy_from_slice(&40_u32.to_le_bytes());
+    bmp[18..22].copy_from_slice(&(WIDTH as i32).to_le_bytes());
+    bmp[22..26].copy_from_slice(&(HEIGHT as i32).to_le_bytes());
+    bmp[26..28].copy_from_slice(&1_u16.to_le_bytes());
+    bmp[28..30].copy_from_slice(&24_u16.to_le_bytes());
+    bmp[34..38].copy_from_slice(&(image_bytes as u32).to_le_bytes());
+
+    // Draw high OAM indexes first so lower indexes retain SNES sprite priority.
+    for sprite in sprites.iter().rev() {
+        for sy in 0..sprite.h {
+            let y = sprite.y + sy as i32;
+            if !(0..HEIGHT as i32).contains(&y) {
+                continue;
+            }
+            for sx in 0..sprite.w {
+                let x = sprite.x + sx as i32;
+                if !(0..WIDTH as i32).contains(&x) {
+                    continue;
+                }
+                let index = sprite.pix[sy * sprite.w + sx];
+                if index == 0 {
+                    continue;
+                }
+                let cgram = 128 + usize::from(sprite.pal) * 16 + usize::from(index);
+                let Some(&colour) = log.cgram_start.get(cgram) else { continue };
+                let [red, green, blue] = poses::rgb555(colour);
+                let at = 54 + (HEIGHT - 1 - y as usize) * row_bytes + x as usize * 3;
+                bmp[at..at + 3].copy_from_slice(&[blue, green, red]);
+            }
+        }
+    }
+
+    // A subtle 16-pixel grid shows the original OAM tile layout.
+    for y in 0..HEIGHT {
+        for x in 0..WIDTH {
+            if x % 16 != 0 && y % 16 != 0 {
+                continue;
+            }
+            let at = 54 + (HEIGHT - 1 - y) * row_bytes + x * 3;
+            if bmp[at..at + 3] == [0, 0, 0] {
+                bmp[at..at + 3].copy_from_slice(&[36, 36, 36]);
+            }
+        }
+    }
+
+    let path = std::env::current_dir().map(|dir| dir.join("flight-oam-atlas.bmp"));
+    match path.and_then(|path| std::fs::write(path, bmp)) {
+        Ok(()) => log::info!(
+            "flight OAM atlas written: flight-oam-atlas.bmp (sprites={}, size={}x{})",
+            sprites.len(), WIDTH, HEIGHT
+        ),
+        Err(error) => log::warn!("flight OAM atlas could not be written: {error}"),
+    }
+}
+
 fn project_flight_objects(
     log: &FrameLog,
     wide: &mut WideFrame,
@@ -1159,6 +1236,7 @@ fn project_flight_objects(
     use crate::art::poses::{self, View};
     use crate::sprite_volume::{PerspectiveCamera, RgbaFrame, SpriteVolume};
 
+    write_flight_oam_atlas(log);
     let entities = poses::entity_poses_in(log, &View::window());
     if entities.is_empty() {
         static EMPTY_OAM_REPORTED: std::sync::atomic::AtomicBool =
