@@ -226,10 +226,22 @@ impl SpriteVolume {
         Self::from_silhouette_profile(frame, max_half_depth, false)
     }
 
-    /// Builds the flight craft as a fixed 13-cross-section stack. Thin silhouettes are expanded
-    /// across the full depth budget instead of collapsing to only a few identical-looking layers.
+    /// Builds the flight craft as a fixed 13-cross-section stack.
     pub fn from_flight_silhouette(frame: &RgbaFrame) -> Result<Self, VolumeError> {
-        Self::from_silhouette_profile(frame, 6, true)
+        Self::from_flight_silhouette_with_depth(frame, 6)
+    }
+
+    /// Builds a flight sprite as a fixed, symmetric stack with a caller-selected half-depth.
+    /// The depth is independent of the sprite's interior thickness, so narrow SNES silhouettes
+    /// still produce enough slices to show their side faces when the camera orbits them.
+    pub fn from_flight_silhouette_with_depth(
+        frame: &RgbaFrame,
+        half_depth: usize,
+    ) -> Result<Self, VolumeError> {
+        if half_depth == 0 {
+            return Err(VolumeError::ZeroDepthLayers);
+        }
+        Self::from_silhouette_profile(frame, half_depth, true)
     }
 
     fn from_silhouette_profile(
@@ -822,5 +834,19 @@ mod silhouette_tests {
         let contour = volume.slices.iter().filter(|slice| slice.pixels[1 * 7 + 3][3] != 0).count();
         let interior = volume.slices.iter().filter(|slice| slice.pixels[3 * 7 + 3][3] != 0).count();
         assert!(interior > contour);
+    }
+
+    #[test]
+    fn flight_silhouette_supports_a_deeper_stack_for_small_sprites() {
+        let mut pixels = vec![[0, 0, 0, 0]; 7 * 7];
+        for y in 2..5 {
+            for x in 2..5 {
+                pixels[y * 7 + x] = [180, 90, 30, 255];
+            }
+        }
+        let frame = RgbaFrame::new(7, 7, pixels).unwrap();
+        let volume = SpriteVolume::from_flight_silhouette_with_depth(&frame, 18).unwrap();
+        assert_eq!(volume.slices.len(), 37);
+        assert!(volume.slices.iter().any(|slice| slice.pixels[3 * 7 + 3][3] != 0));
     }
 }
