@@ -1638,7 +1638,12 @@ impl WideRun {
         hd: HdOptions,
     ) -> Option<SharedHd> {
         let text = self.text.as_ref().and_then(|text| text.started.clone());
-        if let Some(drawn) = &self.shared
+        let flight = matches!(started.0, 0x06 | 0x07)
+            || started.1.as_ref().is_some_and(|field| field.flying);
+        // A flight image changes with the 180-frame roll even when the cartridge's OAM and
+        // Mode 7 registers are otherwise identical, so it must not reuse a previous picture.
+        if !flight
+            && let Some(drawn) = &self.shared
             && drawn.inputs.is(&started, text.as_ref(), hd, log)
         {
             return Some(drawn.shared.clone());
