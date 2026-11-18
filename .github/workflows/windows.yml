@@ -13,6 +13,9 @@ concurrency:
   group: windows-build-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_INCREMENTAL: 1
+
 jobs:
   windows:
     runs-on: windows-latest
@@ -20,23 +23,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@1.99
 
-      - name: Cache Rust dependencies
+      - name: Cache Rust dependencies and incremental artifacts
         uses: Swatinem/rust-cache@v2
 
       - name: Run HD renderer tests
-        run: cargo test -p ssd-hd --release --locked
+        run: cargo test -p ssd-hd --profile ci --locked
 
       - name: Build Windows executable
-        run: cargo build -p ssd-app --release --locked
+        run: cargo build -p ssd-app --profile ci --locked
 
       - name: Package Windows executable
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/ssd-recompiled.exe dist/
+          Copy-Item target/ci/ssd-recompiled.exe dist/
           Compress-Archive -Path dist/ssd-recompiled.exe -DestinationPath dbz-ssd-windows-x86_64.zip -Force
 
       - name: Upload Windows executable and archive
