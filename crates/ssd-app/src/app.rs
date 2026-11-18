@@ -1758,10 +1758,6 @@ fn open_state(row: usize, state: &mut WindowState, machine: &mut Machine) {
     }
 }
 
-/// Runs the windowed loop: the window, its event loop and the frame loop of [`run_windowed`],
-/// until the player quits.
-/// The Enhanced picture of a run (`--hd-scale`): the renderer that draws it, and whether a frame it
-/// refused has been reported.
 /// Separates the scripted Mode 7 flight from free flight on the field map.
 /// The title also uses Mode 7, but its state is $87 and must never enter this path.
 fn flight_render_modes(mode: u8, field_flags: u8) -> (bool, bool) {
@@ -1770,6 +1766,8 @@ fn flight_render_modes(mode: u8, field_flags: u8) -> (bool, bool) {
     (story_flight, free_flight)
 }
 
+/// The Enhanced picture of a run (`--hd-scale`): the renderer that draws it, and whether a frame it
+/// refused has been reported.
 struct Enhanced {
     renderer: ssd_hd::Renderer,
     options: HdOptions,
