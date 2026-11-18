@@ -721,6 +721,7 @@ pub fn project_perspective_with_roll(
     let mut depth = vec![f32::INFINITY; output_count];
     let (sy, cy) = camera.yaw.sin_cos();
     let (sp, cp) = camera.pitch.sin_cos();
+    let (sr, cr) = roll.sin_cos();
     let cx = (volume.width as f32 - 1.0) * 0.5;
     let cy0 = (volume.height as f32 - 1.0) * 0.5;
     let cz = (volume.slices.len() as f32 - 1.0) * 0.5;
@@ -738,7 +739,6 @@ pub fn project_perspective_with_roll(
             let py = cy0 - y as f32;
 
             // Rotate the actual voxel coordinates before camera projection.
-            let (sr, cr) = roll.sin_cos();
             let model_y = py * cr - z * sr;
             let model_z = py * sr + z * cr;
 
