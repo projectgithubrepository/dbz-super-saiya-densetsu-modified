@@ -756,6 +756,7 @@ impl WideRenderer {
             self.flight_last_leader = Some(state.leader);
         } else {
             self.flight_last_leader = None;
+            self.flight_heading = 0.0;
         }
         self.compose(rom, field, log, options, scene, None, 0, None)
     }
