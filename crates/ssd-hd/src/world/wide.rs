@@ -554,6 +554,67 @@ impl WideRenderer {
         check_frame(log)?;
         let scene = classify_with(rom, game_mode, field, log, self.trust_field);
         self.update_flight_state(scene, field);
+        // Capture a short, consecutive sample only after the renderer has positively identified
+        // flight. The startup frame is deliberately excluded.
+        static FLIGHT_DIAGNOSTIC_FRAMES: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        let flight_diagnostic_sample = if self.flight_active {
+            let sample = FLIGHT_DIAGNOSTIC_FRAMES.fetch_add(1, Ordering::Relaxed);
+            (sample < 6).then_some(sample)
+        } else {
+            None
+        };
+        if let Some(sample) = flight_diagnostic_sample {
+            let mut objects = Vec::new();
+            for index in 0..128_usize {
+                let at = index * 4;
+                let low = &log.oam_low[at..at + 4];
+                let high = (log.oam_high[index >> 2] >> (2 * (index & 3))) & 3;
+                let y = low[1];
+                if y == 0xF0 {
+                    continue;
+                }
+                let attr = low[3];
+                let tile = u16::from(low[2]) | (u16::from(attr & 1) << 8);
+                let x9 = u16::from(low[0]) | (u16::from(high & 1) << 8);
+                let x = if x9 >= 256 { i32::from(x9) - 512 } else { i32::from(x9) };
+                let size_index = log.entries.iter()
+                    .find(|entry| !entry.regs.forced_blanking)
+                    .map_or(0, |entry| entry.sprites.fetch_size);
+                let (small, large) = match size_index {
+                    0 => ((8, 8), (16, 16)),
+                    1 => ((8, 8), (32, 32)),
+                    2 => ((8, 8), (64, 64)),
+                    3 => ((16, 16), (32, 32)),
+                    4 => ((16, 16), (64, 64)),
+                    5 => ((32, 32), (64, 64)),
+                    6 => ((16, 32), (32, 64)),
+                    _ => ((16, 32), (32, 32)),
+                };
+                let (w, h) = if high & 2 != 0 { large } else { small };
+                objects.push(format!(
+                    "{index}:tile={tile:03X},attr={attr:02X},pal={},pri={},size={w}x{h},xy=({x},{y}),flip={}{}",
+                    (attr >> 1) & 7,
+                    (attr >> 4) & 3,
+                    if attr & 0x40 != 0 { "X" } else { "-" },
+                    if attr & 0x80 != 0 { "Y" } else { "-" },
+                ));
+            }
+            let mode7_lines = log.entries.iter()
+                .filter(|entry| !entry.regs.forced_blanking && entry.regs.bg_mode == 7)
+                .count();
+            let mode7_bg1_main_lines = log.entries.iter()
+                .filter(|entry| !entry.regs.forced_blanking
+                    && entry.regs.bg_mode == 7 && entry.regs.main_bg[0])
+                .count();
+            log::info!(
+                "flight raw OAM sample={sample}, frame_entries={}, oam_writes={}, visible_oam={}, mode7_lines={mode7_lines}, mode7_bg1_main_lines={mode7_bg1_main_lines}, objects=[{}]",
+                log.entries.len(),
+                log.oam_writes.len(),
+                objects.len(),
+                objects.join(";")
+            );
+        }
         static FLIGHT_INPUT_REPORTED: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(false);
         if !FLIGHT_INPUT_REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -643,6 +704,18 @@ impl WideRenderer {
             art.active = false;
             art.find_poses_in(log, &view)
         });
+        if let Some(sample) = flight_diagnostic_sample {
+            let pose_details = found.iter().map(|(pose, _)| format!(
+                "first={},pal={},size={}x{},org=({},{}),sprites={:032X},field={},cut={}",
+                pose.first, pose.palette, pose.w, pose.h, pose.org.0, pose.org.1,
+                pose.sprites, pose.field, pose.cut
+            )).collect::<Vec<_>>();
+            log::info!(
+                "flight HD pose sample={sample}, found={}, masks=[{}]",
+                found.len(),
+                pose_details.join(";")
+            );
+        }
         if tallying && let Some(art) = art.as_mut() {
             art.tally_frame(log, self.text.cells());
         }
@@ -707,6 +780,15 @@ impl WideRenderer {
             width: scaled(logical.width),
             height: scaled(logical.height),
         };
+        if let Some(sample) = flight_diagnostic_sample {
+            log::info!(
+                "flight final composition sample={sample}, under_available={}, under_used={}, art_present={}, hd_art_compose_will_run={}",
+                under.is_some(),
+                under.is_some(),
+                art.as_ref().is_some_and(|state| state.has_art()),
+                art.as_ref().is_some_and(|state| state.has_art()) && !tallying
+            );
+        }
         if let Some(art) = art.as_mut().filter(|_| !tallying) {
             let clip = if wide.scene == Scene::Bordered {
                 (logical.x, 0, logical.x + logical.width, wide.frame.height as i32)
