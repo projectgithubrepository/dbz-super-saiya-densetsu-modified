@@ -4,6 +4,14 @@ on:
   push:
     branches:
       - work/flight-3d-complete
+    paths:
+      - 'crates/**'
+      - 'third_party/**'
+      - 'assets/**'
+      - 'resources/**'
+      - 'rom/**'
+      - 'data/**'
+      - 'Cargo.lock'
   workflow_dispatch:
 
 permissions:
