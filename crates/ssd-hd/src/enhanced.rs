@@ -192,10 +192,23 @@ impl Renderer {
                     && entry.regs.main_bg == [true, false, false, false]
             }))
             .then_some(self.flight_heading);
+        // One complete somersault every three seconds at the SNES frame rate (60 Hz).
+        // This phase affects only the volumetric sprite projection, never game state or Mode 7.
+        let flight_spin = flight_heading.map(|_| {
+            const SPIN_PERIOD_FRAMES: u64 = 180;
+            let phase = (self.flight_spin_frame % SPIN_PERIOD_FRAMES) as f32
+                / SPIN_PERIOD_FRAMES as f32
+                * std::f32::consts::TAU;
+            self.flight_spin_frame = self.flight_spin_frame.wrapping_add(1);
+            phase
+        });
+        if flight_heading.is_none() {
+            self.flight_spin_frame = 0;
+        }
         let adjusted_log = flight_heading.map(|heading| flight_perspective_log(log, heading));
         let log = adjusted_log.as_ref().unwrap_or(log);
         if self.art.as_ref().is_some_and(|art| art.has_art()) {
-            return self.render_hd_art(log, options, flight_heading);
+            return self.render_hd_art(log, options, flight_heading, flight_spin);
         }
         let mut capture = std::mem::take(&mut self.capture);
         capture.begin(log);
@@ -204,7 +217,7 @@ impl Renderer {
         self.begin_text(options);
         let frame = self.render_log(log, None, false).map(|mut frame| {
             if self.sprite_stacking {
-                apply_sprite_stacks(log, &mut frame, 0, flight_heading);
+                apply_sprite_stacks(log, &mut frame, 0, flight_heading, flight_spin);
             }
             frame
         });
@@ -292,6 +305,7 @@ impl Renderer {
         log: &FrameLog,
         options: HdOptions,
         flight_heading: Option<f32>,
+        flight_spin: Option<f32>,
     ) -> Result<HdFrame, Unsupported> {
         let scale = options.scale as usize;
         let height = usize::from(log.height);
@@ -354,7 +368,7 @@ impl Renderer {
         };
         let remaining_art_mask = found.iter().fold(0_u128, |all, (pose, _)| all | pose.sprites);
         if self.sprite_stacking {
-            apply_sprite_stacks(log, &mut stacked, remaining_art_mask, flight_heading);
+            apply_sprite_stacks(log, &mut stacked, remaining_art_mask, flight_heading, flight_spin);
         }
         let shown = self.without_text(&stacked, &beneath);
         let mut hd = picture(shown.as_ref().unwrap_or(&stacked), &capture, Some(log), options);
@@ -1243,6 +1257,7 @@ fn apply_sprite_stacks(
     frame: &mut Frame,
     additional_hidden: u128,
     flight_heading: Option<f32>,
+    flight_spin: Option<f32>,
 ) -> u128 {
     use crate::art::poses::{self, View};
     use crate::sprite_volume::{project_perspective, PerspectiveCamera, RgbaFrame, SpriteVolume};
@@ -1310,7 +1325,13 @@ fn apply_sprite_stacks(
         let focal = width.max(height) as f32 * 2.2;
         let camera = PerspectiveCamera {
             yaw: flight_heading.map_or(0.78, |heading| heading + std::f32::consts::FRAC_PI_2 + 0.78),
-            pitch: if flight_heading.is_some() { 0.48 } else { 0.18 },
+            // Rotate the volume around its horizontal axis: this is the visible 360° aerial flip.
+            // The base viewing pitch remains, while the animation completes one turn in 180 frames.
+            pitch: if flight_heading.is_some() {
+                0.48 + flight_spin.unwrap_or(0.0)
+            } else {
+                0.18
+            },
             distance: if flight_heading.is_some() { focal * 0.92 } else { sprite_camera_distance(focal, false) },
             focal_length: focal, width, height, near_plane: 0.1,
         };
