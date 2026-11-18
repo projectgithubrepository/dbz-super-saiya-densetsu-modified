@@ -609,6 +609,40 @@ impl WideRenderer {
                 .filter(|entry| !entry.regs.forced_blanking
                     && entry.regs.bg_mode == 7 && entry.regs.main_bg[0])
                 .count();
+            // The flight's ground is a Mode 7 texture; capture the actual per-line transform
+            // and the texture source so we can distinguish the plane from any OAM character.
+            let mode7_rows = log.entries.iter()
+                .filter(|entry| !entry.regs.forced_blanking && entry.regs.bg_mode == 7)
+                .collect::<Vec<_>>();
+            let sample_rows = mode7_rows.iter().enumerate()
+                .filter(|(i, _)| *i < 3 || *i == mode7_rows.len() / 2
+                    || *i + 3 >= mode7_rows.len())
+                .map(|(i, entry)| {
+                    let r = &entry.regs;
+                    format!(
+                        "y={},m7=({:04X},{:04X},{:04X},{:04X}),ofs=({:04X},{:04X}),ctr=({:04X},{:04X}),flip={}{}",
+                        entry.scanline, r.m7_a, r.m7_b, r.m7_c, r.m7_d,
+                        r.m7_h_scroll, r.m7_v_scroll, r.m7_center_x, r.m7_center_y,
+                        if r.m7_h_flip { "H" } else { "-" },
+                        if r.m7_v_flip { "V" } else { "-" }
+                    )
+                }).collect::<Vec<_>>();
+            let mode7_key = crate::mode7art::plane_key(&log.vram);
+            let vram_writes = log.vram_writes.iter().take(24)
+                .map(|w| format!("{:04X}:{:04X}@{}", w.address, w.value, w.entry))
+                .collect::<Vec<_>>();
+            let sprite_fetch = log.entries.iter()
+                .find(|entry| !entry.sprites.blank)
+                .map(|entry| format!(
+                    "scan_size={},fetch_size={},base={:04X},gap={:04X},eval_line={}",
+                    entry.sprites.scan_size, entry.sprites.fetch_size,
+                    entry.sprites.fetch_base, entry.sprites.fetch_gap, entry.sprites.eval_line
+                )).unwrap_or_else(|| "none".to_owned());
+            log::info!(
+                "flight Mode7 sample={sample}, vram_words={}, plane_key={mode7_key:016X}, vram_writes={}, writes=[{}], sprite_fetch={sprite_fetch}, rows=[{}]",
+                log.vram.len(), log.vram_writes.len(), vram_writes.join(";"),
+                sample_rows.join(";")
+            );
             log::info!(
                 "flight raw OAM sample={sample}, frame_entries={}, oam_writes={}, visible_oam={}, mode7_lines={mode7_lines}, mode7_bg1_main_lines={mode7_bg1_main_lines}, objects=[{}]",
                 log.entries.len(),
