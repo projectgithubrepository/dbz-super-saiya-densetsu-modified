@@ -185,8 +185,17 @@ impl Renderer {
         options: HdOptions,
     ) -> Result<HdFrame, Unsupported> {
         assert!((1..=crate::MAX_SCALE).contains(&options.scale), "the scale is 1 to 8");
+        let flight_heading = (self.flight_active
+            && log.entries.iter().any(|entry| {
+                !entry.regs.forced_blanking
+                    && entry.regs.bg_mode == 7
+                    && entry.regs.main_bg == [true, false, false, false]
+            }))
+            .then_some(self.flight_heading);
+        let adjusted_log = flight_heading.map(|heading| flight_perspective_log(log, heading));
+        let log = adjusted_log.as_ref().unwrap_or(log);
         if self.art.as_ref().is_some_and(|art| art.has_art()) {
-            return self.render_hd_art(log, options);
+            return self.render_hd_art(log, options, flight_heading);
         }
         let mut capture = std::mem::take(&mut self.capture);
         capture.begin(log);
@@ -195,7 +204,7 @@ impl Renderer {
         self.begin_text(options);
         let frame = self.render_log(log, None, false).map(|mut frame| {
             if self.sprite_stacking {
-                apply_sprite_stacks(log, &mut frame, 0);
+                apply_sprite_stacks(log, &mut frame, 0, flight_heading);
             }
             frame
         });
@@ -282,6 +291,7 @@ impl Renderer {
         &mut self,
         log: &FrameLog,
         options: HdOptions,
+        flight_heading: Option<f32>,
     ) -> Result<HdFrame, Unsupported> {
         let scale = options.scale as usize;
         let height = usize::from(log.height);
@@ -344,7 +354,7 @@ impl Renderer {
         };
         let remaining_art_mask = found.iter().fold(0_u128, |all, (pose, _)| all | pose.sprites);
         if self.sprite_stacking {
-            apply_sprite_stacks(log, &mut stacked, remaining_art_mask);
+            apply_sprite_stacks(log, &mut stacked, remaining_art_mask, flight_heading);
         }
         let shown = self.without_text(&stacked, &beneath);
         let mut hd = picture(shown.as_ref().unwrap_or(&stacked), &capture, Some(log), options);
@@ -826,6 +836,39 @@ mod tests {
         cgram
     }
 
+    #[test]
+    fn flight_plane_has_scanline_perspective_instead_of_uniform_affine_scale() {
+        let log = mode_7_log(plane_regs(256), stripes(), &cgram_identity());
+        let transformed = flight_perspective_log(&log, -std::f32::consts::FRAC_PI_2);
+        let near_horizon = &transformed.entries[0].regs;
+        let near_camera = &transformed.entries[223].regs;
+        assert!(i16::from_ne_bytes(near_horizon.m7_a.to_ne_bytes()).unsigned_abs()
+            > i16::from_ne_bytes(near_camera.m7_a.to_ne_bytes()).unsigned_abs());
+        assert!(i16::from_ne_bytes(near_horizon.m7_d.to_ne_bytes()).unsigned_abs()
+            > i16::from_ne_bytes(near_camera.m7_d.to_ne_bytes()).unsigned_abs());
+    }
+
+    #[test]
+    fn flight_heading_rotates_the_mode7_sampling_basis() {
+        let log = mode_7_log(plane_regs(256), stripes(), &cgram_identity());
+        let straight = flight_perspective_log(&log, -std::f32::consts::FRAC_PI_2);
+        let turned = flight_perspective_log(&log, 0.0);
+        let row = 180;
+        assert_ne!(straight.entries[row].regs.m7_a, turned.entries[row].regs.m7_a);
+        assert_ne!(straight.entries[row].regs.m7_b, turned.entries[row].regs.m7_b);
+    }
+
+    #[test]
+    fn enhanced_flight_state_changes_the_rendered_mode7_plane() {
+        let log = mode_7_log(plane_regs(256), stripes(), &cgram_identity());
+        let options = HdOptions { scale: 1, look: Look::Pixel };
+        let ordinary = Renderer::new().render_hd(&log, options).unwrap();
+        let mut flight = Renderer::new();
+        flight.set_flight_state(true, -std::f32::consts::FRAC_PI_2);
+        let perspective = flight.render_hd(&log, options).unwrap();
+        assert_ne!(ordinary.rgba, perspective.rgba);
+    }
+
     fn rgb(pixel: &[u8]) -> [u8; 3] {
         [pixel[0], pixel[1], pixel[2]]
     }
@@ -1123,10 +1166,54 @@ fn sprite_stack_mask(log: &FrameLog) -> u128 {
     mask
 }
 
+
+/// Rebuilds the Mode 7 line matrices as a perspective ground plane for the live flight mode.
+/// The SNES affine plane is sampled per scanline; increasing its map-space step toward the
+/// horizon produces the depth compression that a flat affine Mode 7 image cannot provide.
+fn flight_perspective_log(log: &FrameLog, heading: f32) -> FrameLog {
+    let mut adjusted = log.clone();
+    let height = usize::from(log.height).max(1) as f32;
+    let horizon = (height * 0.30).clamp(20.0, (height - 12.0).max(20.0));
+    let bottom = (height - 1.0).max(horizon + 1.0);
+    let (sin_yaw, cos_yaw) = (heading + std::f32::consts::FRAC_PI_2).sin_cos();
+
+    for entry in &mut adjusted.entries {
+        let regs = &mut entry.regs;
+        if regs.forced_blanking || regs.bg_mode != 7 || regs.main_bg != [true, false, false, false] {
+            continue;
+        }
+        let row = f32::from(entry.scanline);
+        let perspective = ((bottom - horizon) / (row - horizon).max(1.0))
+            .clamp(0.72, 3.4);
+        let a = f32::from(regs.m7_a as i16);
+        let b = f32::from(regs.m7_b as i16);
+        let c = f32::from(regs.m7_c as i16);
+        let d = f32::from(regs.m7_d as i16);
+
+        // Rotate the sampling basis around Mode 7's existing center, then apply scanline depth.
+        let values = [
+            (a * cos_yaw - b * sin_yaw) * perspective,
+            (a * sin_yaw + b * cos_yaw) * perspective,
+            (c * cos_yaw - d * sin_yaw) * perspective,
+            (c * sin_yaw + d * cos_yaw) * perspective,
+        ];
+        let signed = |value: f32| -> u16 {
+            value.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16 as u16
+        };
+        [regs.m7_a, regs.m7_b, regs.m7_c, regs.m7_d] = values.map(signed);
+    }
+    adjusted
+}
+
 /// Projects one independent pose per connected OAM entity and replaces only those pixels.
 /// The clean PPU background is redrawn with selected OAM entries hidden, so perspective shifts
 /// do not leave the original flat sprite behind.
-fn apply_sprite_stacks(log: &FrameLog, frame: &mut Frame, additional_hidden: u128) -> u128 {
+fn apply_sprite_stacks(
+    log: &FrameLog,
+    frame: &mut Frame,
+    additional_hidden: u128,
+    flight_heading: Option<f32>,
+) -> u128 {
     use crate::art::poses::{self, View};
     use crate::sprite_volume::{project_perspective, PerspectiveCamera, RgbaFrame, SpriteVolume};
 
@@ -1168,10 +1255,16 @@ fn apply_sprite_stacks(log: &FrameLog, frame: &mut Frame, additional_hidden: u12
         }
         let Ok(source) = RgbaFrame::new(width, height, rgba) else { continue };
 
-        let Ok(volume) = SpriteVolume::from_silhouette(&source, MAX_HALF_DEPTH) else { volume_failures += 1; continue };
+        let volume_result = if flight_heading.is_some() {
+            SpriteVolume::from_flight_silhouette(&source)
+        } else {
+            SpriteVolume::from_silhouette(&source, MAX_HALF_DEPTH)
+        };
+        let Ok(volume) = volume_result else { volume_failures += 1; continue };
         let focal = width.max(height) as f32 * 2.2;
         let camera = PerspectiveCamera {
-            yaw: 0.78, pitch: 0.18, distance: focal * 2.8,
+            yaw: flight_heading.map_or(0.78, |heading| heading + std::f32::consts::FRAC_PI_2 + 0.78),
+            pitch: if flight_heading.is_some() { 0.34 } else { 0.18 }, distance: focal * 2.8,
             focal_length: focal, width, height, near_plane: 0.1,
         };
         let Ok(projected) = project_perspective(&volume, camera) else { volume_failures += 1; continue };

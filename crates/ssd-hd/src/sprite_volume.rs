@@ -223,6 +223,20 @@ impl SpriteVolume {
         frame: &RgbaFrame,
         max_half_depth: usize,
     ) -> Result<Self, VolumeError> {
+        Self::from_silhouette_profile(frame, max_half_depth, false)
+    }
+
+    /// Builds the flight craft as a fixed 13-cross-section stack. Thin silhouettes are expanded
+    /// across the full depth budget instead of collapsing to only a few identical-looking layers.
+    pub fn from_flight_silhouette(frame: &RgbaFrame) -> Result<Self, VolumeError> {
+        Self::from_silhouette_profile(frame, 6, true)
+    }
+
+    fn from_silhouette_profile(
+        frame: &RgbaFrame,
+        max_half_depth: usize,
+        fixed_depth: bool,
+    ) -> Result<Self, VolumeError> {
         if max_half_depth == 0 { return Err(VolumeError::ZeroDepthLayers); }
         let count = frame.width.checked_mul(frame.height)
             .ok_or(VolumeError::DimensionsOverflow)?;
@@ -269,15 +283,22 @@ impl SpriteVolume {
             }
         }
 
-        let half = distance.iter().copied().filter(|d| *d != u16::MAX)
-            .max().unwrap_or(1).min(max_half_depth.min(u16::MAX as usize) as u16) as usize;
+        let measured_half = distance.iter().copied().filter(|d| *d != u16::MAX)
+            .max().unwrap_or(1).min(max_half_depth.min(u16::MAX as usize) as u16)
+            .max(1) as usize;
+        let half = if fixed_depth { max_half_depth } else { measured_half };
         let layers = half * 2 + 1;
         let mut slices = (0..layers).map(|z| VolumeSlice {
             z, width: frame.width, height: frame.height, pixels: vec![[0, 0, 0, 0]; count],
         }).collect::<Vec<_>>();
         for (at, &pixel) in frame.pixels.iter().enumerate() {
             if pixel[3] == 0 { continue; }
-            let depth = usize::from(distance[at]).min(half).max(1);
+            let measured = usize::from(distance[at]).min(measured_half).max(1);
+            let depth = if fixed_depth {
+                measured.saturating_mul(half).div_ceil(measured_half).clamp(1, half)
+            } else {
+                measured
+            };
             let first = half.saturating_sub(depth);
             let last = (half + depth).min(layers - 1);
             for slice in &mut slices[first..=last] {
@@ -785,5 +806,21 @@ mod silhouette_tests {
     fn silhouette_stack_rejects_zero_depth() {
         let frame = RgbaFrame::new(1, 1, vec![[1, 2, 3, 255]]).unwrap();
         assert_eq!(SpriteVolume::from_silhouette(&frame, 0), Err(VolumeError::ZeroDepthLayers));
+    }
+
+    #[test]
+    fn flight_silhouette_always_builds_thirteen_depth_cross_sections() {
+        let mut pixels = vec![[0, 0, 0, 0]; 7 * 7];
+        for y in 1..6 {
+            for x in 1..6 {
+                pixels[y * 7 + x] = [180, 90, 30, 255];
+            }
+        }
+        let frame = RgbaFrame::new(7, 7, pixels).unwrap();
+        let volume = SpriteVolume::from_flight_silhouette(&frame).unwrap();
+        assert_eq!(volume.slices.len(), 13);
+        let contour = volume.slices.iter().filter(|slice| slice.pixels[1 * 7 + 3][3] != 0).count();
+        let interior = volume.slices.iter().filter(|slice| slice.pixels[3 * 7 + 3][3] != 0).count();
+        assert!(interior > contour);
     }
 }

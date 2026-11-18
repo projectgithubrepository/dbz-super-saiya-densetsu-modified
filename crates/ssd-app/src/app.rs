@@ -1766,6 +1766,8 @@ struct Enhanced {
     renderer: ssd_hd::Renderer,
     options: HdOptions,
     refused: bool,
+    last_flight_leader: Option<(u16, u16)>,
+    flight_heading: f32,
 }
 
 impl Enhanced {
@@ -1774,7 +1776,7 @@ impl Enhanced {
         renderer.set_sprite_stacking(true);
         renderer.set_art(hd_art::pack(rom));
         renderer.set_font(hd_art::font(rom));
-        Self { renderer, options, refused: false }
+        Self { renderer, options, refused: false, last_flight_leader: None, flight_heading: -std::f32::consts::FRAC_PI_2 }
     }
 
     /// The Enhanced picture of the machine's last frame, or `None` when there is none to draw: the
@@ -1785,7 +1787,33 @@ impl Enhanced {
             machine.set_line_log(true);
             return None;
         }
-        self.renderer.set_conditions(ssd_hd::Conditions::of_work_ram(machine.wram()));
+        let wram = machine.wram();
+        self.renderer.set_conditions(ssd_hd::Conditions::of_work_ram(wram));
+        // $24 is the main-loop state ($06/$07 are flight); keep bit 7 so title state $87
+        // is not mistaken for flight. $01BC bit 0 is the field's free-flight flag.
+        let mode = wram.get(0x24).copied().unwrap_or(0);
+        let flight_active = matches!(mode, 0x06 | 0x07)
+            || (mode & 0x80 == 0
+                && wram.get(0x01BC).is_some_and(|flags| *flags & 1 != 0));
+        let word = |at: usize| -> u16 {
+            u16::from(*wram.get(at).unwrap_or(&0))
+                | (u16::from(*wram.get(at + 1).unwrap_or(&0)) << 8)
+        };
+        if flight_active {
+            let leader = (word(0x01AA), word(0x01AC));
+            if let Some(previous) = self.last_flight_leader {
+                let dx = i32::from(leader.0) - i32::from(previous.0);
+                let dz = i32::from(leader.1) - i32::from(previous.1);
+                if dx != 0 || dz != 0 {
+                    self.flight_heading = (dz as f32).atan2(dx as f32);
+                }
+            }
+            self.last_flight_leader = Some(leader);
+        } else {
+            self.last_flight_leader = None;
+            self.flight_heading = -std::f32::consts::FRAC_PI_2;
+        }
+        self.renderer.set_flight_state(flight_active, self.flight_heading);
         let log = machine.frame_log()?;
         match self.renderer.render_hd(log, self.options) {
             Ok(picture) => Some(picture),

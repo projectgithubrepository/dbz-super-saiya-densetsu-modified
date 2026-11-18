@@ -183,6 +183,9 @@ pub struct Renderer {
     pub(crate) art: Option<Box<art::ArtState>>,
     /// Whether Enhanced frames project fighter and field entities as sprite stacks.
     sprite_stacking: bool,
+    /// The active cartridge flight state and camera heading supplied by the game loop.
+    flight_active: bool,
+    flight_heading: f32,
     /// The HD text font, when the pictures draw their text from it (see [`Renderer::set_font`]).
     font: Option<Arc<Font>>,
     /// The text cells of the frame being drawn, noted while `text_on`.
@@ -214,6 +217,8 @@ impl Renderer {
             only_rows: None,
             art: None,
             sprite_stacking: false,
+            flight_active: false,
+            flight_heading: 0.0,
             font: None,
             text: font::TextCapture::default(),
             text_on: false,
@@ -231,6 +236,13 @@ impl Renderer {
     /// Disabled by default so the base renderer and its exact-output tests remain unchanged.
     pub fn set_sprite_stacking(&mut self, enabled: bool) {
         self.sprite_stacking = enabled;
+    }
+
+    /// Supplies the original game's flight flag and heading derived from its live map movement.
+    /// Flight rendering is opt-in and never changes the machine's gameplay state.
+    pub fn set_flight_state(&mut self, active: bool, heading: f32) {
+        self.flight_active = active;
+        self.flight_heading = if heading.is_finite() { heading } else { 0.0 };
     }
 
     /// Makes the Enhanced pictures ([`Renderer::render_hd`]) draw the art of `pack`; `None` (the
