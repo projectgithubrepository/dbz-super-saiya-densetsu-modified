@@ -679,6 +679,19 @@ pub fn project_perspective(
     volume: &SpriteVolume,
     camera: PerspectiveCamera,
 ) -> Result<RgbaFrame, VolumeError> {
+    project_perspective_with_roll(volume, camera, 0.0)
+}
+
+/// Projects a sprite volume after rotating the model around its horizontal axis.
+/// A full 2π produces a true forward/backward somersault rather than orbiting the camera.
+pub fn project_perspective_with_roll(
+    volume: &SpriteVolume,
+    camera: PerspectiveCamera,
+    roll: f32,
+) -> Result<RgbaFrame, VolumeError> {
+    if !roll.is_finite() {
+        return Err(VolumeError::InvalidCamera);
+    }
     if volume.width == 0 || volume.height == 0 || volume.slices.is_empty() {
         return Err(VolumeError::EmptyFrame);
     }
@@ -724,11 +737,16 @@ pub fn project_perspective(
             let px = x as f32 - cx;
             let py = cy0 - y as f32;
 
-            // Orbit the camera around the vertical stack axis, then pitch toward the model.
-            let horizontal = px * cy - z * sy;
-            let depth_yaw = px * sy + z * cy;
-            let vertical = py * cp - depth_yaw * sp;
-            let depth_pitch = py * sp + depth_yaw * cp;
+            // Rotate the actual voxel coordinates before camera projection.
+            let (sr, cr) = roll.sin_cos();
+            let model_y = py * cr - z * sr;
+            let model_z = py * sr + z * cr;
+
+            // Then orbit the camera around the vertical stack axis and apply its fixed pitch.
+            let horizontal = px * cy - model_z * sy;
+            let depth_yaw = px * sy + model_z * cy;
+            let vertical = model_y * cp - depth_yaw * sp;
+            let depth_pitch = model_y * sp + depth_yaw * cp;
             let camera_z = camera.distance - depth_pitch;
             if camera_z <= camera.near_plane { continue; }
 
