@@ -320,7 +320,7 @@ impl Renderer {
                 return Err(reason);
             }
         };
-        let stack_mask = if self.sprite_stacking { sprite_stack_mask(log) } else { 0 };
+        let stack_mask = if self.sprite_stacking { sprite_stack_mask(log, flight_heading.is_some()) } else { 0 };
         let mut found = art.find_poses(log);
         // The volumetric renderer takes ownership of the original OAM pixels for these poses.
         found.retain(|(pose, _)| pose.sprites & stack_mask == 0);
@@ -1155,20 +1155,30 @@ mod tests {
 
 /// Returns the OAM entries belonging to fighter and field entities eligible for sprite stacking.
 /// Effects, ground shadows, portraits and UI objects are deliberately excluded.
-fn sprite_stack_mask(log: &FrameLog) -> u128 {
+fn stackable_pose(pose: &crate::art::poses::Pose, flight: bool) -> bool {
+    !pose.shadow
+        && !pose.cut
+        && !pose.sprites.eq(&0)
+        && !pose.arr.is_empty()
+        && (flight || pose.fighter || pose.field)
+}
+
+/// OAM entries that the volume pass will replace. In flight, the game may classify the craft as
+/// an effect rather than a fighter/field group, so include every complete non-shadow entity.
+fn sprite_stack_mask(log: &FrameLog, flight: bool) -> u128 {
     use crate::art::poses::{self, View};
     let view = View::window();
     let sprites = poses::sprites_in(log, &view);
     let poses = poses::poses_in(log, &sprites, &view);
     let mut mask = 0_u128;
     for pose in &poses {
-        if !(pose.fighter || pose.field) || pose.shadow || pose.cut || pose.arr.is_empty() {
+        if !stackable_pose(pose, flight) {
             continue;
         }
         let is_union = poses.iter().any(|other| {
             other.sprites != pose.sprites
                 && other.sprites & pose.sprites == other.sprites
-                && (other.fighter || other.field) && !other.shadow
+                && stackable_pose(other, flight)
         });
         if !is_union { mask |= pose.sprites; }
     }
@@ -1246,17 +1256,18 @@ fn apply_sprite_stacks(
     let mut eligible = 0usize;
     let mut unions = 0usize;
     let mut volume_failures = 0usize;
+    let mut effect_poses = 0usize;
     const PAD: usize = 18;
     const MAX_HALF_DEPTH: usize = 7;
 
     for pose in &poses {
-        if !(pose.fighter || pose.field) || pose.shadow || pose.cut || pose.arr.is_empty() {
+        if !stackable_pose(pose, flight_heading.is_some()) {
             continue;
         }
         let is_union = poses.iter().any(|other| {
             other.sprites != pose.sprites
                 && other.sprites & pose.sprites == other.sprites
-                && (other.fighter || other.field) && !other.shadow
+                && stackable_pose(other, flight_heading.is_some())
         });
         if is_union { unions += 1; continue; }
         eligible += 1;
@@ -1264,19 +1275,34 @@ fn apply_sprite_stacks(
         let width = pose.w + PAD * 2;
         let height = pose.h + PAD * 2;
         let mut rgba = vec![[0, 0, 0, 0]; width * height];
-        for (at, &index) in pose.arr.iter().enumerate() {
-            if index == 0 { continue; }
-            let palette_index = 128 + usize::from(pose.palette) * 16 + usize::from(index);
-            let Some(&colour) = log.cgram_start.get(palette_index) else { continue };
-            let [r, g, b] = poses::rgb555(colour);
-            let x = at % pose.w + PAD;
-            let y = at / pose.w + PAD;
-            rgba[y * width + x] = [r, g, b, 255];
+        if pose.rgba.len() == pose.arr.len() * 4 {
+            // Effect poses carry their actual scanline-resolved RGBA colours. Re-reading CGRAM
+            // here would flatten palette effects and can give the craft the wrong colours.
+            for (at, pixel) in pose.rgba.chunks_exact(4).enumerate() {
+                if pixel[3] == 0 { continue; }
+                let x = at % pose.w + PAD;
+                let y = at / pose.w + PAD;
+                rgba[y * width + x] = [pixel[0], pixel[1], pixel[2], pixel[3]];
+            }
+            effect_poses += 1;
+        } else {
+            for (at, &index) in pose.arr.iter().enumerate() {
+                if index == 0 { continue; }
+                let palette_index = 128 + usize::from(pose.palette) * 16 + usize::from(index);
+                let Some(&colour) = log.cgram_start.get(palette_index) else { continue };
+                let [r, g, b] = poses::rgb555(colour);
+                let x = at % pose.w + PAD;
+                let y = at / pose.w + PAD;
+                rgba[y * width + x] = [r, g, b, 255];
+            }
         }
         let Ok(source) = RgbaFrame::new(width, height, rgba) else { continue };
 
         let volume_result = if flight_heading.is_some() {
-            SpriteVolume::from_flight_silhouette(&source)
+            // A flight craft is read as a true thick stack, not a 13-slice paper-thin extrusion.
+            // Scale the depth budget with the source silhouette so the side faces survive rotation.
+            let half_depth = (width.max(height) / 5).clamp(10, 24);
+            SpriteVolume::from_silhouette(&source, half_depth)
         } else {
             SpriteVolume::from_silhouette(&source, MAX_HALF_DEPTH)
         };
@@ -1284,8 +1310,8 @@ fn apply_sprite_stacks(
         let focal = width.max(height) as f32 * 2.2;
         let camera = PerspectiveCamera {
             yaw: flight_heading.map_or(0.78, |heading| heading + std::f32::consts::FRAC_PI_2 + 0.78),
-            pitch: if flight_heading.is_some() { 0.34 } else { 0.18 },
-            distance: sprite_camera_distance(focal, flight_heading.is_some()),
+            pitch: if flight_heading.is_some() { 0.48 } else { 0.18 },
+            distance: if flight_heading.is_some() { focal * 0.92 } else { sprite_camera_distance(focal, false) },
             focal_length: focal, width, height, near_plane: 0.1,
         };
         let Ok(projected) = project_perspective(&volume, camera) else { volume_failures += 1; continue };
@@ -1299,9 +1325,9 @@ fn apply_sprite_stacks(
         std::sync::atomic::AtomicBool::new(false);
     if !REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         log::warn!(
-            "sprite stacking: frame={}x{}, OAM sprites={}, poses={}, eligible={}, unions={}, converted={}, volume/projection failures={}, hidden-mask={:#034x}",
-            frame.width, frame.height, sprites.len(), poses.len(), eligible, unions,
-            draws.len(), volume_failures, mask
+            "sprite stacking: frame={}x{}, flight={}, OAM sprites={}, poses={}, eligible={}, effects={}, unions={}, converted={}, volume/projection failures={}, hidden-mask={:#034x}",
+            frame.width, frame.height, flight_heading.is_some(), sprites.len(), poses.len(), eligible,
+            effect_poses, unions, draws.len(), volume_failures, mask
         );
     }
     if mask == 0 { return 0; }
