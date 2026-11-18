@@ -1184,7 +1184,7 @@ fn apply_sprite_stacks(log: &FrameLog, frame: &mut Frame, additional_hidden: u12
     static REPORTED: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
     if !REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        log::info!(
+        log::warn!(
             "sprite stacking: frame={}x{}, OAM sprites={}, poses={}, eligible={}, unions={}, converted={}, volume/projection failures={}, hidden-mask={:#034x}",
             frame.width, frame.height, sprites.len(), poses.len(), eligible, unions,
             draws.len(), volume_failures, mask
