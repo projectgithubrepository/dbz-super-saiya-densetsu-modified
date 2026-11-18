@@ -191,14 +191,8 @@ impl Renderer {
         let flight_heading = self.flight_active.then_some(self.flight_heading);
         // One complete somersault every three seconds of emulated game time (60 Hz).
         // Fast-forward and display refresh rate therefore cannot change the animation speed.
-        let flight_spin = flight_heading.map(|_| {
-            const SPIN_PERIOD_FRAMES: u64 = 180;
-            let started = self.flight_start_frame.unwrap_or(self.flight_frame);
-            let elapsed = self.flight_frame.saturating_sub(started);
-            (elapsed % SPIN_PERIOD_FRAMES) as f32
-                / SPIN_PERIOD_FRAMES as f32
-                * std::f32::consts::TAU
-        });
+        let flight_spin = flight_heading
+            .map(|_| flight_spin_phase(self.flight_frame, self.flight_start_frame.unwrap_or(self.flight_frame)));
         let adjusted_log = flight_heading.map(|heading| flight_perspective_log(log, heading));
         let log = adjusted_log.as_ref().unwrap_or(log);
         if self.art.as_ref().is_some_and(|art| art.has_art()) {
@@ -845,6 +839,16 @@ mod tests {
     }
 
     #[test]
+    fn flight_somersault_uses_emulated_frames_and_repeats_every_three_seconds() {
+        let quarter_turn = flight_spin_phase(45, 0);
+        let half_turn = flight_spin_phase(90, 0);
+        assert!((quarter_turn - std::f32::consts::FRAC_PI_2).abs() < 0.0001);
+        assert!((half_turn - std::f32::consts::PI).abs() < 0.0001);
+        assert_eq!(flight_spin_phase(180, 0), 0.0);
+        assert_eq!(flight_spin_phase(225, 45), quarter_turn);
+    }
+
+    #[test]
     fn flight_sprite_camera_preserves_near_native_sprite_scale() {
         let focal = 128.0;
         let distance = sprite_camera_distance(focal, true);
@@ -1235,6 +1239,14 @@ fn flight_perspective_log(log: &FrameLog, heading: f32) -> FrameLog {
         [regs.m7_a, regs.m7_b, regs.m7_c, regs.m7_d] = values.map(signed);
     }
     adjusted
+}
+
+/// The flight somersault phase in radians, derived from emulated SNES frames.
+fn flight_spin_phase(frame: u64, started: u64) -> f32 {
+    const SPIN_PERIOD_FRAMES: u64 = 180;
+    (frame.saturating_sub(started) % SPIN_PERIOD_FRAMES) as f32
+        / SPIN_PERIOD_FRAMES as f32
+        * std::f32::consts::TAU
 }
 
 /// Keeps a flight sprite close to its source size while allowing the depth axis to
