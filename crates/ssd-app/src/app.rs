@@ -1766,6 +1766,16 @@ fn flight_render_modes(mode: u8, field_flags: u8) -> (bool, bool) {
     (story_flight, free_flight)
 }
 
+/// Fallback for flight scenes whose WRAM mode flag is not the expected value.
+/// The title's attract/menu screen is explicitly excluded by mode $87.
+fn flight_mode7_visible(log: &ssd_oracle::FrameLog, mode: u8) -> bool {
+    mode != 0x87 && log.entries.iter().any(|entry| {
+        !entry.regs.forced_blanking
+            && entry.regs.bg_mode == 7
+            && entry.regs.main_bg[0]
+    })
+}
+
 /// The Enhanced picture of a run (`--hd-scale`): the renderer that draws it, and whether a frame it
 /// refused has been reported.
 struct Enhanced {
@@ -1794,6 +1804,7 @@ impl Enhanced {
             machine.set_line_log(true);
             return None;
         }
+        let Some(log) = machine.frame_log() else { return None };
         let wram = machine.wram();
         self.renderer.set_conditions(ssd_hd::Conditions::of_work_ram(wram));
         // There are two different flight contexts in the game:
@@ -1804,7 +1815,8 @@ impl Enhanced {
         let mode = wram.get(0x24).copied().unwrap_or(0);
         let field_flags = wram.get(0x01BC).copied().unwrap_or(0);
         let (story_flight, free_flight) = flight_render_modes(mode, field_flags);
-        let flight_active = story_flight || free_flight;
+        let mode7_fallback = flight_mode7_visible(log, mode);
+        let flight_active = story_flight || free_flight || mode7_fallback;
         let word = |at: usize| -> u16 {
             u16::from(*wram.get(at).unwrap_or(&0))
                 | (u16::from(*wram.get(at + 1).unwrap_or(&0)) << 8)
@@ -1835,13 +1847,12 @@ impl Enhanced {
         }
         if flight_active != self.flight_active {
             log::info!(
-                "flight render state: active={}, mode=\u{24}{:02X}, field_flags=\u{24}{:02X}, story={}, free={}",
-                flight_active, mode, field_flags, story_flight, free_flight
+                "flight render state: active={}, mode=\u{24}{:02X}, field_flags=\u{24}{:02X}, story={}, free={}, mode7_fallback={}",
+                flight_active, mode, field_flags, story_flight, free_flight, mode7_fallback
             );
             self.flight_active = flight_active;
         }
         self.renderer.set_flight_state(flight_active, self.flight_heading, machine.frame_count());
-        let log = machine.frame_log()?;
         match self.renderer.render_hd(log, self.options) {
             Ok(picture) => Some(picture),
             Err(reason) => {
