@@ -1158,7 +1158,7 @@ mod tests {
 fn stackable_pose(pose: &crate::art::poses::Pose, flight: bool) -> bool {
     !pose.shadow
         && !pose.cut
-        && !pose.sprites.eq(&0)
+        && pose.sprites != 0
         && !pose.arr.is_empty()
         && (flight || pose.fighter || pose.field)
 }
@@ -1302,7 +1302,7 @@ fn apply_sprite_stacks(
             // A flight craft is read as a true thick stack, not a 13-slice paper-thin extrusion.
             // Scale the depth budget with the source silhouette so the side faces survive rotation.
             let half_depth = (width.max(height) / 5).clamp(10, 24);
-            SpriteVolume::from_silhouette(&source, half_depth)
+            SpriteVolume::from_flight_silhouette_with_depth(&source, half_depth)
         } else {
             SpriteVolume::from_silhouette(&source, MAX_HALF_DEPTH)
         };
