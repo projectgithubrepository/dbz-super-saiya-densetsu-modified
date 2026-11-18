@@ -23,7 +23,7 @@ jobs:
             build-essential cmake ninja-build pkg-config \
             libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
-            libxfixes-dev libxss-dev libgl1-mesa-dev libvulkan-dev
+            libxfixes-dev libxss-dev libxtst-dev libgl1-mesa-dev libvulkan-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
