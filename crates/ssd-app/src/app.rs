@@ -1789,28 +1789,42 @@ impl Enhanced {
         }
         let wram = machine.wram();
         self.renderer.set_conditions(ssd_hd::Conditions::of_work_ram(wram));
-        // $24 is the main-loop state ($06/$07 are flight); keep bit 7 so title state $87
-        // is not mistaken for flight. $01BC bit 0 is the field's free-flight flag.
+        // There are two different flight contexts in the game:
+        // - $07 is the scripted Mode 7 flight transition (the title is $87).
+        // - $06 is the normal field loop; it is flight only while $01BC bit 0 is set.
+        // Do not classify every field frame as flight: that was turning the whole world map
+        // into a 3D stack even while the party was walking.
         let mode = wram.get(0x24).copied().unwrap_or(0);
-        let flight_active = matches!(mode, 0x06 | 0x07)
-            || (mode & 0x80 == 0
-                && wram.get(0x01BC).is_some_and(|flags| *flags & 1 != 0));
+        let story_flight = mode == 0x07;
+        let free_flight = mode == 0x06
+            && wram.get(0x01BC).is_some_and(|flags| *flags & 1 != 0);
+        let flight_active = story_flight || free_flight;
         let word = |at: usize| -> u16 {
             u16::from(*wram.get(at).unwrap_or(&0))
                 | (u16::from(*wram.get(at + 1).unwrap_or(&0)) << 8)
         };
-        if flight_active {
-            let leader = (word(0x01AA), word(0x01AC));
+        if free_flight {
+            // $01A6/$01A8 are the party leader's map coordinates. $01AA/$01AC
+            // are the follower/camera spot, offset from the leader, not the heading source.
+            let leader = (word(0x01A6), word(0x01A8));
             if let Some(previous) = self.last_flight_leader {
-                let dx = i32::from(leader.0) - i32::from(previous.0);
-                let dz = i32::from(leader.1) - i32::from(previous.1);
+                // Coordinates are 16-bit map words; a signed wrapping delta avoids a false
+                // half-map turn when the coordinate rolls over.
+                let dx = i32::from(leader.0.wrapping_sub(previous.0) as i16);
+                let dz = i32::from(leader.1.wrapping_sub(previous.1) as i16);
                 if dx != 0 || dz != 0 {
-                    self.flight_heading = (dz as f32).atan2(dx as f32);
+                    let target = (dz as f32).atan2(dx as f32);
+                    let delta = (target - self.flight_heading + std::f32::consts::PI)
+                        .rem_euclid(std::f32::consts::TAU)
+                        - std::f32::consts::PI;
+                    self.flight_heading += delta * 0.30;
                 }
             }
             self.last_flight_leader = Some(leader);
         } else {
             self.last_flight_leader = None;
+            // Scripted flights have no live map movement to sample. Keep their stable
+            // forward camera; never derive a heading from stale field coordinates.
             self.flight_heading = -std::f32::consts::FRAC_PI_2;
         }
         self.renderer.set_flight_state(flight_active, self.flight_heading);
