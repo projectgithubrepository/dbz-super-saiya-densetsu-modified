@@ -24,10 +24,10 @@ jobs:
       - name: Install native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential cmake ninja-build pkg-config \
-            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev \
-            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
+          sudo apt-get install -y \\
+            build-essential cmake ninja-build pkg-config \\
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev \\
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \\
             libxfixes-dev libxss-dev libxtst-dev libgl1-mesa-dev libvulkan-dev
 
       - name: Install Rust toolchain
@@ -48,10 +48,12 @@ jobs:
           cp target/release/ssd-recompiled dist/
           tar -czf dbz-ssd-linux-x86_64.tar.gz -C dist ssd-recompiled
 
-      - name: Upload Linux executable
+      - name: Upload Linux executable and archive
         uses: actions/upload-artifact@v4
         with:
           name: dbz-ssd-linux-x86_64
-          path: dbz-ssd-linux-x86_64.tar.gz
+          path: |
+            dist/ssd-recompiled
+            dbz-ssd-linux-x86_64.tar.gz
           if-no-files-found: error
           retention-days: 30
