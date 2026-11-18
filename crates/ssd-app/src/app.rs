@@ -1769,11 +1769,13 @@ fn flight_render_modes(mode: u8, field_flags: u8) -> (bool, bool) {
 /// Fallback for flight scenes whose WRAM mode flag is not the expected value.
 /// The title's attract/menu screen is explicitly excluded by mode $87.
 fn flight_mode7_visible(log: &ssd_oracle::FrameLog, mode: u8) -> bool {
-    mode != 0x87 && log.entries.iter().any(|entry| {
-        !entry.regs.forced_blanking
-            && entry.regs.bg_mode == 7
-            && entry.regs.main_bg[0]
-    })
+    // The game's flight scenes are main-loop states $06/$07. Do not require BG1's
+    // main-screen enable bit here: the PPU can change layer enables during a Mode 7
+    // transition, even though the flight plane is still being rendered.
+    matches!(mode, 0x06 | 0x07)
+        && log.entries.iter().any(|entry| {
+            !entry.regs.forced_blanking && entry.regs.bg_mode == 7
+        })
 }
 
 /// The Enhanced picture of a run (`--hd-scale`): the renderer that draws it, and whether a frame it
@@ -1817,6 +1819,24 @@ impl Enhanced {
         let (story_flight, free_flight) = flight_render_modes(mode, field_flags);
         let mode7_fallback = flight_mode7_visible(log, mode);
         let flight_active = story_flight || free_flight || mode7_fallback;
+        // One startup diagnostic makes it possible to distinguish a bad WRAM flight
+        // classification from a missing Mode 7 signature without flooding the log.
+        static FLIGHT_INPUT_REPORTED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if !FLIGHT_INPUT_REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            let mode7_lines = log.entries.iter().filter(|entry| {
+                !entry.regs.forced_blanking && entry.regs.bg_mode == 7
+            }).count();
+            let mode7_bg1_lines = log.entries.iter().filter(|entry| {
+                !entry.regs.forced_blanking
+                    && entry.regs.bg_mode == 7
+                    && entry.regs.main_bg[0]
+            }).count();
+            log::info!(
+                "flight input probe: mode=\u{24}{:02X}, field_flags=\u{24}{:02X}, mode7_lines={}, mode7_bg1_main_lines={}, frame={}",
+                mode, field_flags, mode7_lines, mode7_bg1_lines, machine.frame_count()
+            );
+        }
         let word = |at: usize| -> u16 {
             u16::from(*wram.get(at).unwrap_or(&0))
                 | (u16::from(*wram.get(at + 1).unwrap_or(&0)) << 8)
