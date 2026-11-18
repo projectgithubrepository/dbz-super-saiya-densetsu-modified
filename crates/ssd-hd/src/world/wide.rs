@@ -260,6 +260,8 @@ pub struct WideRenderer {
     /// Last world position and heading of the flying leader; retained while the player pauses.
     flight_last_leader: Option<(u16, u16)>,
     flight_heading: f32,
+    /// Emulated frames elapsed in the current flight; drives one roll per 180 frames.
+    flight_frame: u32,
     /// The objects the original drops, as the last frame composed placed them.
     extras: Vec<Extra>,
     /// The frame being drawn is a picture (a window with black beside it) that shows the field's
@@ -391,6 +393,7 @@ impl WideRenderer {
             flight_volumes: false,
             flight_last_leader: None,
             flight_heading: 0.0,
+            flight_frame: 0,
             extras: Vec::new(),
             mapped: false,
             translator: None,
@@ -541,6 +544,7 @@ impl WideRenderer {
         check_width(options.width)?;
         check_frame(log)?;
         let scene = classify_with(rom, game_mode, field, log, self.trust_field);
+        self.update_flight_state(scene, field);
         self.mapped =
             scene == Scene::Bordered && field.is_some_and(|state| shows_map(rom, state, log));
         let scale = hd.scale as usize;
@@ -728,6 +732,27 @@ impl WideRenderer {
         self.compose(rom, Some(state), log, options, Scene::Field, None, 0, None)
     }
 
+    /// Updates the flight heading and advances the roll exactly once for each rendered flight frame.
+    fn update_flight_state(&mut self, scene: Scene, field: Option<&FieldState>) {
+        let active = scene == Scene::Flight || field.is_some_and(|state| state.flying);
+        if let Some(state) = field.filter(|state| state.flying) {
+            if let Some(previous) = self.flight_last_leader {
+                let dx = i32::from(state.leader.0) - i32::from(previous.0);
+                let dz = i32::from(state.leader.1) - i32::from(previous.1);
+                if let Some(heading) = super::flight::heading_from_delta(dx, dz) {
+                    self.flight_heading = heading;
+                }
+            }
+            self.flight_last_leader = Some(state.leader);
+        } else if !active {
+            self.flight_last_leader = None;
+            self.flight_heading = 0.0;
+        } else {
+            self.flight_last_leader = None;
+        }
+        self.flight_frame = if active { self.flight_frame.wrapping_add(1) } else { 0 };
+    }
+
     /// Renders any frame of `log` in the wide view: as the field where the field's map is on
     /// screen, as a flight or as a picture ([`classify`]). `game_mode` and `field` are read from
     /// the work RAM the frame was rendered from ([`FieldState::from_wram`] for `field`).
@@ -745,19 +770,7 @@ impl WideRenderer {
     ) -> Result<WideFrame, WideError> {
         check_width(options.width)?;
         let scene = classify_with(rom, game_mode, field, log, self.trust_field);
-        if let Some(state) = field.filter(|state| state.flying) {
-            if let Some(previous) = self.flight_last_leader {
-                let dx = i32::from(state.leader.0) - i32::from(previous.0);
-                let dz = i32::from(state.leader.1) - i32::from(previous.1);
-                if let Some(heading) = super::flight::heading_from_delta(dx, dz) {
-                    self.flight_heading = heading;
-                }
-            }
-            self.flight_last_leader = Some(state.leader);
-        } else {
-            self.flight_last_leader = None;
-            self.flight_heading = 0.0;
-        }
+        self.update_flight_state(scene, field);
         self.compose(rom, field, log, options, scene, None, 0, None)
     }
 
@@ -958,7 +971,7 @@ impl WideRenderer {
         // Free flight is the field scene with the cartridge's $01BC flight bit set; story
         // transitions use the separate Mode 7 scene. Both need the same volumetric OAM pass.
         if self.flight_volumes && (scene == Scene::Flight || state.is_some_and(|field| field.flying)) {
-            project_flight_objects(log, &mut wide, self.flight_heading);
+            project_flight_objects(log, &mut wide, self.flight_heading, flight_roll(self.flight_frame));
         }
         self.extras = extras;
         Ok(wide)
@@ -973,7 +986,7 @@ impl WideRenderer {
 /// pixels under the projected entities. Unsupported or incomplete captures keep the normal frame.
 /// Rebuilds each flight OAM entity as a variable-thickness sprite stack and projects it
 /// with perspective. The Mode 7 plane and all non-object pixels remain on the original path.
-fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame, flight_heading: f32) {
+fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame, flight_heading: f32, flight_roll: f32) {
     use crate::art::poses::{self, View};
     use crate::sprite_volume::{PerspectiveCamera, RgbaFrame, SpriteVolume};
 
@@ -1017,7 +1030,7 @@ fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame, flight_heading: 
         }
         let Ok(source) = RgbaFrame::new(width, height_src, rgba) else { continue };
 
-        let Ok(volume) = SpriteVolume::from_silhouette(&source, MAX_HALF_DEPTH) else { continue };
+        let Ok(volume) = SpriteVolume::from_flight_silhouette_with_depth(&source, MAX_HALF_DEPTH) else { continue };
         let focal = (width.max(height_src) as f32) * 2.2;
         let camera = PerspectiveCamera {
             yaw: 0.78 + flight_heading,
@@ -1028,7 +1041,7 @@ fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame, flight_heading: 
             height: height_src,
             near_plane: 0.1,
         };
-        let Ok(projected) = crate::sprite_volume::project_perspective(&volume, camera) else { continue };
+        let Ok(projected) = crate::sprite_volume::project_perspective_with_roll(&volume, camera, flight_roll) else { continue };
 
         let left = window_x as i32 + entity.org.0 - PAD as i32;
         let top = entity.org.1 - PAD as i32;
@@ -1045,6 +1058,12 @@ fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame, flight_heading: 
             }
         }
     }
+}
+
+/// Roll angle for one complete forward/backward rotation every 180 emulated frames.
+#[must_use]
+fn flight_roll(frame: u32) -> f32 {
+    std::f32::consts::TAU * (frame % 180) as f32 / 180.0
 }
 
 /// Whether the environment asks for every frame in one piece (`SSD_HD_SERIAL`).
@@ -1468,10 +1487,9 @@ impl WideRun {
     #[must_use]
     pub fn new(rom: &[u8]) -> Self {
         let mut renderer = WideRenderer::new();
-        // Do not enable the experimental silhouette extrusion in live gameplay. It creates
-        // dark side bands and treats portraits/effects as flat cut-outs, not sprite-stacked 3D
-        // assets. Re-enable only after semantic entity/depth data and scene-specific rendering
-        // are available; keep the original SNES presentation in the meantime.
+        // The flight projection is gated inside WideRenderer to Mode 7 flight and free-flight
+        // frames only; field, battle, title and menu rendering retain the original pipeline.
+        renderer.set_flight_volumes(true);
         Self {
             rom: Arc::from(rom),
             renderer: Some(renderer),
@@ -3111,6 +3129,18 @@ mod tests {
         assert_eq!(classify(Rom(&rom), 0x06, None, &log), Scene::Flight);
         assert_eq!(classify(Rom(&rom), 0x87, None, &log), Scene::Bordered);
         assert_eq!(classify(Rom(&rom), 0x0C, None, &log), Scene::Bordered, "the last fight");
+    }
+
+    #[test]
+    fn flight_roll_completes_a_rotation_every_180_frames() {
+        let close = |a: f32, b: f32| (a - b).abs() < 0.0001;
+        assert!(close(flight_roll(0), 0.0));
+        assert!(close(flight_roll(45), std::f32::consts::FRAC_PI_2));
+        assert!(close(flight_roll(90), std::f32::consts::PI));
+        assert!(close(flight_roll(135), 3.0 * std::f32::consts::FRAC_PI_2));
+        assert!(flight_roll(179) > 6.2);
+        assert!(close(flight_roll(180), 0.0));
+        assert!(close(flight_roll(360), 0.0));
     }
 
     #[test]
