@@ -845,7 +845,9 @@ mod tests {
         assert!((quarter_turn - std::f32::consts::FRAC_PI_2).abs() < 0.0001);
         assert!((half_turn - std::f32::consts::PI).abs() < 0.0001);
         assert_eq!(flight_spin_phase(180, 0), 0.0);
-        assert_eq!(flight_spin_phase(225, 45), quarter_turn);
+        // The phase repeats every 180 frames from the flight start.
+        assert_eq!(flight_spin_phase(225, 0), quarter_turn);
+        assert_eq!(flight_spin_phase(225, 45), 0.0);
     }
 
     #[test]
