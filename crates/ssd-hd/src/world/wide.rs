@@ -257,6 +257,9 @@ pub struct WideRenderer {
     trust_field: bool,
     /// Project flight OAM sprites as depth-buffered volumes in the live run renderer.
     flight_volumes: bool,
+    /// Last world position and heading of the flying leader; retained while the player pauses.
+    flight_last_leader: Option<(u16, u16)>,
+    flight_heading: f32,
     /// The objects the original drops, as the last frame composed placed them.
     extras: Vec<Extra>,
     /// The frame being drawn is a picture (a window with black beside it) that shows the field's
@@ -386,6 +389,8 @@ impl WideRenderer {
             text: TextCapture::default(),
             trust_field: false,
             flight_volumes: false,
+            flight_last_leader: None,
+            flight_heading: 0.0,
             extras: Vec::new(),
             mapped: false,
             translator: None,
@@ -740,6 +745,18 @@ impl WideRenderer {
     ) -> Result<WideFrame, WideError> {
         check_width(options.width)?;
         let scene = classify_with(rom, game_mode, field, log, self.trust_field);
+        if let Some(state) = field.filter(|state| state.flying) {
+            if let Some(previous) = self.flight_last_leader {
+                let dx = i32::from(state.leader.0) - i32::from(previous.0);
+                let dz = i32::from(state.leader.1) - i32::from(previous.1);
+                if let Some(heading) = super::flight::heading_from_delta(dx, dz) {
+                    self.flight_heading = heading;
+                }
+            }
+            self.flight_last_leader = Some(state.leader);
+        } else {
+            self.flight_last_leader = None;
+        }
         self.compose(rom, field, log, options, scene, None, 0, None)
     }
 
@@ -940,7 +957,7 @@ impl WideRenderer {
         // Free flight is the field scene with the cartridge's $01BC flight bit set; story
         // transitions use the separate Mode 7 scene. Both need the same volumetric OAM pass.
         if self.flight_volumes && (scene == Scene::Flight || state.is_some_and(|field| field.flying)) {
-            project_flight_objects(log, &mut wide);
+            project_flight_objects(log, &mut wide, self.flight_heading);
         }
         self.extras = extras;
         Ok(wide)
@@ -955,7 +972,7 @@ impl WideRenderer {
 /// pixels under the projected entities. Unsupported or incomplete captures keep the normal frame.
 /// Rebuilds each flight OAM entity as a variable-thickness sprite stack and projects it
 /// with perspective. The Mode 7 plane and all non-object pixels remain on the original path.
-fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame) {
+fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame, flight_heading: f32) {
     use crate::art::poses::{self, View};
     use crate::sprite_volume::{PerspectiveCamera, RgbaFrame, SpriteVolume};
 
@@ -1002,7 +1019,7 @@ fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame) {
         let Ok(volume) = SpriteVolume::from_silhouette(&source, MAX_HALF_DEPTH) else { continue };
         let focal = (width.max(height_src) as f32) * 2.2;
         let camera = PerspectiveCamera {
-            yaw: 0.78,
+            yaw: 0.78 + flight_heading,
             pitch: 0.18,
             distance: focal * 2.8,
             focal_length: focal,
