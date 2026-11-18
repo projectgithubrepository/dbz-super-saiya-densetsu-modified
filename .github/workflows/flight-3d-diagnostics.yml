@@ -1,0 +1,39 @@
+name: Flight 3D diagnostics (Windows)
+
+on:
+  push:
+    branches:
+      - work/flight-3d-complete
+    paths:
+      - "crates/ssd-hd/**"
+      - "crates/ssd-app/**"
+      - ".github/workflows/flight-3d-diagnostics.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run focused HD renderer tests
+        run: cargo test -p ssd-hd
+
+      - name: Build the Windows game executable
+        run: cargo build --release -p ssd-app
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: flight-3d-diagnostics-windows
+          path: target/release/ssd-recompiled.exe
+          if-no-files-found: error
