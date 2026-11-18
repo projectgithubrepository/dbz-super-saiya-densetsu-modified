@@ -73,6 +73,50 @@ impl std::fmt::Display for VolumeError {
 impl std::error::Error for VolumeError {}
 
 impl SpriteVolume {
+    /// Builds a stack from independently authored cross-section images.
+    ///
+    /// Every image must be registered to the same canvas (same width and height).
+    /// Unlike `from_silhouette` or `extrude`, this does not infer or copy depth:
+    /// each input image becomes exactly one ordered slice of the volume.
+    pub fn from_cross_sections(sections: &[RgbaFrame]) -> Result<Self, VolumeError> {
+        let Some(first) = sections.first() else {
+            return Err(VolumeError::ZeroDepthLayers);
+        };
+        let count = first.width.checked_mul(first.height)
+            .ok_or(VolumeError::DimensionsOverflow)?;
+        if first.width == 0 || first.height == 0 {
+            return Err(VolumeError::EmptyFrame);
+        }
+        if first.pixels.len() != count {
+            return Err(VolumeError::PixelCountMismatch {
+                expected: count,
+                actual: first.pixels.len(),
+            });
+        }
+
+        let mut slices = Vec::with_capacity(sections.len());
+        for (z, section) in sections.iter().enumerate() {
+            if section.width != first.width || section.height != first.height {
+                return Err(VolumeError::DepthMapSizeMismatch {
+                    expected: count,
+                    actual: section.width.saturating_mul(section.height),
+                });
+            }
+            if section.pixels.len() != count {
+                return Err(VolumeError::PixelCountMismatch {
+                    expected: count,
+                    actual: section.pixels.len(),
+                });
+            }
+            slices.push(VolumeSlice {
+                z,
+                width: first.width,
+                height: first.height,
+                pixels: section.pixels.clone(),
+            });
+        }
+        Ok(Self { width: first.width, height: first.height, slices })
+    }
     /// Builds a volume from one depth value (0..=255) per source pixel.
     /// Each opaque pixel occupies up to thickness consecutive slices, ending at its mapped depth.
     /// Fully transparent source pixels remain empty.
@@ -414,6 +458,30 @@ mod tests {
 
     fn sample_frame() -> RgbaFrame {
         RgbaFrame::new(2, 1, vec![[255, 0, 0, 255], [0, 255, 0, 0]]).unwrap()
+    }
+
+    #[test]
+    fn cross_sections_preserve_independent_slice_art_without_extruding_it() {
+        let back = RgbaFrame::new(2, 1, vec![[10, 20, 30, 255], [0, 0, 0, 0]]).unwrap();
+        let front = RgbaFrame::new(2, 1, vec![[0, 0, 0, 0], [40, 50, 60, 128]]).unwrap();
+        let volume = SpriteVolume::from_cross_sections(&[back.clone(), front.clone()]).unwrap();
+
+        assert_eq!(volume.slices.len(), 2);
+        assert_eq!(volume.slices[0].z, 0);
+        assert_eq!(volume.slices[1].z, 1);
+        assert_eq!(volume.slices[0].pixels, back.pixels);
+        assert_eq!(volume.slices[1].pixels, front.pixels);
+        assert_eq!(volume.voxel_count(), 2);
+    }
+
+    #[test]
+    fn cross_sections_reject_mismatched_canvases() {
+        let a = RgbaFrame::new(2, 1, vec![[0; 4]; 2]).unwrap();
+        let b = RgbaFrame::new(1, 1, vec![[0; 4]]).unwrap();
+        assert!(matches!(
+            SpriteVolume::from_cross_sections(&[a, b]),
+            Err(VolumeError::DepthMapSizeMismatch { .. })
+        ));
     }
 
     #[test]
