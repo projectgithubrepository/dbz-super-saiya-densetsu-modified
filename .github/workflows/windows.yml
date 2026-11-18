@@ -4,6 +4,14 @@ on:
   push:
     branches:
       - work/flight-3d-complete
+    paths:
+      - 'crates/**'
+      - 'third_party/**'
+      - 'assets/**'
+      - 'resources/**'
+      - 'rom/**'
+      - 'data/**'
+      - 'Cargo.lock'
   workflow_dispatch:
 
 permissions:
@@ -31,9 +39,13 @@ jobs:
 
       - name: Run HD renderer tests
         run: cargo test -p ssd-hd --profile ci --locked
+        env:
+          CARGO_INCREMENTAL: 1
 
       - name: Build Windows executable
         run: cargo build -p ssd-app --profile ci --locked
+        env:
+          CARGO_INCREMENTAL: 1
 
       - name: Package Windows executable
         shell: pwsh
