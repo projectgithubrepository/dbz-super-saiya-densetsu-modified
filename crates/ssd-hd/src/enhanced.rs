@@ -1136,6 +1136,9 @@ fn apply_sprite_stacks(log: &FrameLog, frame: &mut Frame, additional_hidden: u12
     let poses = poses::poses_in(log, &sprites, &view);
     let mut draws = Vec::new();
     let mut mask = 0_u128;
+    let mut eligible = 0usize;
+    let mut unions = 0usize;
+    let mut volume_failures = 0usize;
     const PAD: usize = 18;
     const MAX_HALF_DEPTH: usize = 7;
 
@@ -1148,7 +1151,8 @@ fn apply_sprite_stacks(log: &FrameLog, frame: &mut Frame, additional_hidden: u12
                 && other.sprites & pose.sprites == other.sprites
                 && (other.fighter || other.field) && !other.shadow
         });
-        if is_union { continue; }
+        if is_union { unions += 1; continue; }
+        eligible += 1;
 
         let width = pose.w + PAD * 2;
         let height = pose.h + PAD * 2;
@@ -1164,17 +1168,28 @@ fn apply_sprite_stacks(log: &FrameLog, frame: &mut Frame, additional_hidden: u12
         }
         let Ok(source) = RgbaFrame::new(width, height, rgba) else { continue };
 
-        let Ok(volume) = SpriteVolume::from_silhouette(&source, MAX_HALF_DEPTH) else { continue };
+        let Ok(volume) = SpriteVolume::from_silhouette(&source, MAX_HALF_DEPTH) else { volume_failures += 1; continue };
         let focal = width.max(height) as f32 * 2.2;
         let camera = PerspectiveCamera {
             yaw: 0.78, pitch: 0.18, distance: focal * 2.8,
             focal_length: focal, width, height, near_plane: 0.1,
         };
-        let Ok(projected) = project_perspective(&volume, camera) else { continue };
+        let Ok(projected) = project_perspective(&volume, camera) else { volume_failures += 1; continue };
         mask |= pose.sprites;
         draws.push((pose.first, pose.org.0 - PAD as i32, pose.org.1 - PAD as i32, projected));
     }
 
+    // Report the first real frame's conversion counts once. This distinguishes a renderer
+    // path/pose-classification failure from a projection that runs but looks too subtle.
+    static REPORTED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    if !REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        log::info!(
+            "sprite stacking: frame={}x{}, OAM sprites={}, poses={}, eligible={}, unions={}, converted={}, volume/projection failures={}, hidden-mask={:#034x}",
+            frame.width, frame.height, sprites.len(), poses.len(), eligible, unions,
+            draws.len(), volume_failures, mask
+        );
+    }
     if mask == 0 { return 0; }
     let mut background_renderer = Renderer::new();
     background_renderer.hidden_objects = mask | additional_hidden;
