@@ -1762,6 +1762,14 @@ fn open_state(row: usize, state: &mut WindowState, machine: &mut Machine) {
 /// until the player quits.
 /// The Enhanced picture of a run (`--hd-scale`): the renderer that draws it, and whether a frame it
 /// refused has been reported.
+/// Separates the scripted Mode 7 flight from free flight on the field map.
+/// The title also uses Mode 7, but its state is $87 and must never enter this path.
+fn flight_render_modes(mode: u8, field_flags: u8) -> (bool, bool) {
+    let story_flight = mode == 0x07;
+    let free_flight = mode == 0x06 && field_flags & 1 != 0;
+    (story_flight, free_flight)
+}
+
 struct Enhanced {
     renderer: ssd_hd::Renderer,
     options: HdOptions,
@@ -1795,9 +1803,8 @@ impl Enhanced {
         // Do not classify every field frame as flight: that was turning the whole world map
         // into a 3D stack even while the party was walking.
         let mode = wram.get(0x24).copied().unwrap_or(0);
-        let story_flight = mode == 0x07;
-        let free_flight = mode == 0x06
-            && wram.get(0x01BC).is_some_and(|flags| *flags & 1 != 0);
+        let field_flags = wram.get(0x01BC).copied().unwrap_or(0);
+        let (story_flight, free_flight) = flight_render_modes(mode, field_flags);
         let flight_active = story_flight || free_flight;
         let word = |at: usize| -> u16 {
             u16::from(*wram.get(at).unwrap_or(&0))
@@ -2870,6 +2877,14 @@ mod tests {
     use crate::test_support::{SharedStore, sram_counter_machine, sram_counter_rom};
     use crate::ui_script;
     use ssd_oracle::{FrameStats, FsSaveStore, MemorySaveStore};
+
+    #[test]
+    fn flight_modes_do_not_treat_every_field_frame_or_the_title_as_flight() {
+        assert_eq!(flight_render_modes(0x06, 0x00), (false, false), "walking field");
+        assert_eq!(flight_render_modes(0x06, 0x01), (false, true), "free flight");
+        assert_eq!(flight_render_modes(0x07, 0x00), (true, false), "scripted Mode 7 flight");
+        assert_eq!(flight_render_modes(0x87, 0x01), (false, false), "title must stay excluded");
+    }
 
     #[test]
     fn a_change_of_the_page_reaches_the_picture_and_the_window_but_a_flag_keeps_its_choice() {
