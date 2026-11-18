@@ -2904,6 +2904,37 @@ mod tests {
     }
 
     #[test]
+    fn mode7_flight_fallback_uses_live_ppu_and_excludes_title() {
+        use ssd_oracle::{FrameLog, LineEntry, LineRegs, SpriteLine};
+        let log = FrameLog {
+            complete: true,
+            height: 224,
+            h_hi_res: false,
+            v_hi_res: false,
+            entries: vec![LineEntry {
+                scanline: 1,
+                from_pixel: 0,
+                regs: LineRegs {
+                    bg_mode: 7,
+                    main_bg: [true, false, false, false],
+                    ..LineRegs::default()
+                },
+                sprites: SpriteLine::default(),
+            }],
+            cgram_start: vec![0; 256],
+            cgram_writes: Vec::new(),
+            vram: vec![0; 32768],
+            vram_writes: Vec::new(),
+            oam_low: vec![0; 512],
+            oam_high: vec![0; 32],
+            oam_writes: Vec::new(),
+        };
+        assert!(flight_mode7_visible(&log, 0x07));
+        assert!(flight_mode7_visible(&log, 0x06));
+        assert!(!flight_mode7_visible(&log, 0x87));
+    }
+
+    #[test]
     fn a_change_of_the_page_reaches_the_picture_and_the_window_but_a_flag_keeps_its_choice() {
         let controls = Controls::new(HooksArg::Original, HooksSwitch::Allowed, true, true);
         let mut state = WindowState::new(controls);
