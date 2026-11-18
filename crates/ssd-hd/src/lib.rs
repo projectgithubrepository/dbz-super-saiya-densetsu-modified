@@ -186,6 +186,8 @@ pub struct Renderer {
     /// The active cartridge flight state and camera heading supplied by the game loop.
     flight_active: bool,
     flight_heading: f32,
+    /// Render-frame phase for the flight-only volumetric somersault animation.
+    flight_spin_frame: u64,
     /// The HD text font, when the pictures draw their text from it (see [`Renderer::set_font`]).
     font: Option<Arc<Font>>,
     /// The text cells of the frame being drawn, noted while `text_on`.
@@ -219,6 +221,7 @@ impl Renderer {
             sprite_stacking: false,
             flight_active: false,
             flight_heading: 0.0,
+            flight_spin_frame: 0,
             font: None,
             text: font::TextCapture::default(),
             text_on: false,
