@@ -843,9 +843,9 @@ mod tests {
         let near_horizon = &transformed.entries[0].regs;
         let near_camera = &transformed.entries[223].regs;
         assert!(i16::from_ne_bytes(near_horizon.m7_a.to_ne_bytes()).unsigned_abs()
-            > i16::from_ne_bytes(near_camera.m7_a.to_ne_bytes()).unsigned_abs());
+            < i16::from_ne_bytes(near_camera.m7_a.to_ne_bytes()).unsigned_abs());
         assert!(i16::from_ne_bytes(near_horizon.m7_d.to_ne_bytes()).unsigned_abs()
-            > i16::from_ne_bytes(near_camera.m7_d.to_ne_bytes()).unsigned_abs());
+            < i16::from_ne_bytes(near_camera.m7_d.to_ne_bytes()).unsigned_abs());
     }
 
     #[test]
@@ -1173,7 +1173,9 @@ fn sprite_stack_mask(log: &FrameLog) -> u128 {
 fn flight_perspective_log(log: &FrameLog, heading: f32) -> FrameLog {
     let mut adjusted = log.clone();
     let height = usize::from(log.height).max(1) as f32;
-    let horizon = (height * 0.30).clamp(20.0, (height - 12.0).max(20.0));
+    // Mode 7 flight frames are 224/239 lines tall. Keep the horizon above the caption
+    // band, and make the texture sampling step grow toward the camera (not shrink).
+    let horizon = (height * 0.30).clamp(20.0, (height - 24.0).max(20.0));
     let bottom = (height - 1.0).max(horizon + 1.0);
     let (sin_yaw, cos_yaw) = (heading + std::f32::consts::FRAC_PI_2).sin_cos();
 
@@ -1183,8 +1185,11 @@ fn flight_perspective_log(log: &FrameLog, heading: f32) -> FrameLog {
             continue;
         }
         let row = f32::from(entry.scanline);
-        let perspective = ((bottom - horizon) / (row - horizon).max(1.0))
-            .clamp(0.72, 3.4);
+        // Perspective projection: close to the horizon one screen row covers very little
+        // world space; toward the bottom it covers progressively more. The previous formula
+        // inverted this relationship and compressed the foreground while magnifying the horizon.
+        let depth = ((row - horizon) / (bottom - horizon)).clamp(0.0, 1.0);
+        let perspective = 0.18 + 2.35 * depth.powf(1.35);
         let a = f32::from(regs.m7_a as i16);
         let b = f32::from(regs.m7_b as i16);
         let c = f32::from(regs.m7_c as i16);
