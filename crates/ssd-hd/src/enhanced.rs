@@ -185,13 +185,10 @@ impl Renderer {
         options: HdOptions,
     ) -> Result<HdFrame, Unsupported> {
         assert!((1..=crate::MAX_SCALE).contains(&options.scale), "the scale is 1 to 8");
-        let flight_heading = (self.flight_active
-            && log.entries.iter().any(|entry| {
-                !entry.regs.forced_blanking
-                    && entry.regs.bg_mode == 7
-                    && entry.regs.main_bg == [true, false, false, false]
-            }))
-            .then_some(self.flight_heading);
+        // The application already identifies flight from the game's WRAM state.
+        // Do not gate the 3D test on a second, brittle PPU-register signature: flight
+        // transitions can change those registers between scanlines and suppress the effect.
+        let flight_heading = self.flight_active.then_some(self.flight_heading);
         // One complete somersault every three seconds at the SNES frame rate (60 Hz).
         // This phase affects only the volumetric sprite projection, never game state or Mode 7.
         let flight_spin = flight_heading.map(|_| {
@@ -1328,7 +1325,7 @@ fn apply_sprite_stacks(
             // Rotate the volume around its horizontal axis: this is the visible 360° aerial flip.
             // The base viewing pitch remains, while the animation completes one turn in 180 frames.
             pitch: if flight_heading.is_some() {
-                0.48 + flight_spin.unwrap_or(0.0)
+                0.48
             } else {
                 0.18
             },
