@@ -1,5 +1,6 @@
 name: DBZ sprite-stack Windows build
 # Build the playable Windows game and run the sprite-stack renderer tests.
+# Revalidation trigger: verify the current sprite-stacking branch head.
 
 on:
   push:
