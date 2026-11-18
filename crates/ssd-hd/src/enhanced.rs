@@ -1260,7 +1260,7 @@ fn apply_sprite_stacks(
     flight_spin: Option<f32>,
 ) -> u128 {
     use crate::art::poses::{self, View};
-    use crate::sprite_volume::{project_perspective, PerspectiveCamera, RgbaFrame, SpriteVolume};
+    use crate::sprite_volume::{project_perspective, project_perspective_with_roll, PerspectiveCamera, RgbaFrame, SpriteVolume};
 
     if frame.width != WIDTH || frame.height == 0 { return 0; }
     let view = View::window();
@@ -1335,7 +1335,12 @@ fn apply_sprite_stacks(
             distance: if flight_heading.is_some() { focal * 0.92 } else { sprite_camera_distance(focal, false) },
             focal_length: focal, width, height, near_plane: 0.1,
         };
-        let Ok(projected) = project_perspective(&volume, camera) else { volume_failures += 1; continue };
+        let projected_result = if let Some(spin) = flight_spin {
+            project_perspective_with_roll(&volume, camera, spin)
+        } else {
+            project_perspective(&volume, camera)
+        };
+        let Ok(projected) = projected_result else { volume_failures += 1; continue };
         mask |= pose.sprites;
         draws.push((pose.first, pose.org.0 - PAD as i32, pose.org.1 - PAD as i32, projected));
     }
