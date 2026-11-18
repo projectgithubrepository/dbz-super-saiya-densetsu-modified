@@ -859,11 +859,40 @@ enum Draw {
 /// the picture of a fast-forward's batch is that of its last frame.
 fn note_view(state: &mut WindowState, machine: &Machine, draw: Draw) {
     let Some(hd) = state.hd.as_mut() else { return };
+    hd.set_emulated_frame(machine.wram(), machine.frame_count());
     if draw == Draw::Skip {
         hd.skip_frame(machine.wram());
         return;
     }
     if let Some(options) = state.scaled {
+        static FLIGHT_INPUT_REPORTED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if !FLIGHT_INPUT_REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            let wram = machine.wram();
+            let mode = wram.get(0x24).copied().unwrap_or(0);
+            let field_flags = wram.get(0x01BC).copied().unwrap_or(0);
+            let (mode7_lines, mode7_bg1_main_lines) = machine.frame_log().map_or((0, 0), |log| {
+                let mode7_lines = log
+                    .entries
+                    .iter()
+                    .filter(|entry| !entry.regs.forced_blanking && entry.regs.bg_mode == 7)
+                    .count();
+                let mode7_bg1_main_lines = log
+                    .entries
+                    .iter()
+                    .filter(|entry| {
+                        !entry.regs.forced_blanking
+                            && entry.regs.bg_mode == 7
+                            && entry.regs.main_bg[0]
+                    })
+                    .count();
+                (mode7_lines, mode7_bg1_main_lines)
+            });
+            log::info!(
+                "flight input probe: renderer=WideRun, mode=${mode:02X}, field_flags=${field_flags:02X}, mode7_lines={mode7_lines}, mode7_bg1_main_lines={mode7_bg1_main_lines}, frame={}",
+                machine.frame_count()
+            );
+        }
         // The Enhanced picture in the 16:9 view; a frame it refuses is drawn as the 256-wide one
         let view = match draw {
             Draw::Again => hd.redraw_frame_hd_shared(machine.frame_log(), options),
@@ -1137,6 +1166,9 @@ fn run_frames(
         } else {
             session.run(machine, pad, &events, &mut null, &stops)?
         };
+        if let Some(hd) = state.hd.as_mut() {
+            hd.set_emulated_frame(machine.wram(), machine.frame_count());
+        }
         let ran_at = Instant::now();
         state.stages.driver += driven - started;
         state.stages.emulate += ran_at - driven;
@@ -1773,9 +1805,7 @@ fn flight_mode7_visible(log: &ssd_oracle::FrameLog, mode: u8) -> bool {
     // main-screen enable bit here: the PPU can change layer enables during a Mode 7
     // transition, even though the flight plane is still being rendered.
     matches!(mode, 0x06 | 0x07)
-        && log.entries.iter().any(|entry| {
-            !entry.regs.forced_blanking && entry.regs.bg_mode == 7
-        })
+        && log.entries.iter().any(|entry| !entry.regs.forced_blanking && entry.regs.bg_mode == 7)
 }
 
 /// The Enhanced picture of a run (`--hd-scale`): the renderer that draws it, and whether a frame it
@@ -1795,7 +1825,14 @@ impl Enhanced {
         renderer.set_sprite_stacking(true);
         renderer.set_art(hd_art::pack(rom));
         renderer.set_font(hd_art::font(rom));
-        Self { renderer, options, refused: false, last_flight_leader: None, flight_heading: -std::f32::consts::FRAC_PI_2, flight_active: false }
+        Self {
+            renderer,
+            options,
+            refused: false,
+            last_flight_leader: None,
+            flight_heading: -std::f32::consts::FRAC_PI_2,
+            flight_active: false,
+        }
     }
 
     /// The Enhanced picture of the machine's last frame, or `None` when there is none to draw: the
@@ -1819,32 +1856,14 @@ impl Enhanced {
         let (story_flight, free_flight) = flight_render_modes(mode, field_flags);
         let mode7_fallback = flight_mode7_visible(log, mode);
         let flight_active = story_flight || free_flight || mode7_fallback;
-        // One startup diagnostic makes it possible to distinguish a bad WRAM flight
-        // classification from a missing Mode 7 signature without flooding the log.
-        static FLIGHT_INPUT_REPORTED: std::sync::atomic::AtomicBool =
-            std::sync::atomic::AtomicBool::new(false);
-        if !FLIGHT_INPUT_REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            let mode7_lines = log.entries.iter().filter(|entry| {
-                !entry.regs.forced_blanking && entry.regs.bg_mode == 7
-            }).count();
-            let mode7_bg1_lines = log.entries.iter().filter(|entry| {
-                !entry.regs.forced_blanking
-                    && entry.regs.bg_mode == 7
-                    && entry.regs.main_bg[0]
-            }).count();
-            log::info!(
-                "flight input probe: mode=\u{24}{:02X}, field_flags=\u{24}{:02X}, mode7_lines={}, mode7_bg1_main_lines={}, frame={}",
-                mode, field_flags, mode7_lines, mode7_bg1_lines, machine.frame_count()
-            );
-        }
         let word = |at: usize| -> u16 {
             u16::from(*wram.get(at).unwrap_or(&0))
                 | (u16::from(*wram.get(at + 1).unwrap_or(&0)) << 8)
         };
         if free_flight {
-            // $01A6/$01A8 are the party leader's map coordinates. $01AA/$01AC
-            // are the follower/camera spot, offset from the leader, not the heading source.
-            let leader = (word(0x01A6), word(0x01A8));
+            // $01AA/$01AC are the leader's map coordinates; $01A6/$01A8 are the
+            // follower/camera spot and must not drive the flight heading.
+            let leader = (word(0x01AA), word(0x01AC));
             if let Some(previous) = self.last_flight_leader {
                 // Coordinates are 16-bit map words; a signed wrapping delta avoids a false
                 // half-map turn when the coordinate rolls over.
@@ -1868,7 +1887,12 @@ impl Enhanced {
         if flight_active != self.flight_active {
             log::info!(
                 "flight render state: active={}, mode=\u{24}{:02X}, field_flags=\u{24}{:02X}, story={}, free={}, mode7_fallback={}",
-                flight_active, mode, field_flags, story_flight, free_flight, mode7_fallback
+                flight_active,
+                mode,
+                field_flags,
+                story_flight,
+                free_flight,
+                mode7_fallback
             );
             self.flight_active = flight_active;
         }

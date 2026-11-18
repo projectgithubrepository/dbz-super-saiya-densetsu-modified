@@ -260,8 +260,10 @@ pub struct WideRenderer {
     /// Last world position and heading of the flying leader; retained while the player pauses.
     flight_last_leader: Option<(u16, u16)>,
     flight_heading: f32,
-    /// Emulated frames elapsed in the current flight; drives one roll per 180 frames.
+    /// Flight frame, in emulated frames when supplied by `WideRun`.
     flight_frame: u32,
+    flight_frame_override: Option<u32>,
+    flight_active: bool,
     /// The objects the original drops, as the last frame composed placed them.
     extras: Vec<Extra>,
     /// The frame being drawn is a picture (a window with black beside it) that shows the field's
@@ -394,6 +396,8 @@ impl WideRenderer {
             flight_last_leader: None,
             flight_heading: 0.0,
             flight_frame: 0,
+            flight_frame_override: None,
+            flight_active: false,
             extras: Vec::new(),
             mapped: false,
             translator: None,
@@ -440,6 +444,11 @@ impl WideRenderer {
     /// The ordinary field and battle render paths are unchanged.
     pub fn set_flight_volumes(&mut self, enabled: bool) {
         self.flight_volumes = enabled;
+    }
+
+    /// Uses the emulated flight tick supplied by the run loop rather than counting rendered images.
+    pub fn set_flight_frame(&mut self, frame: Option<u32>) {
+        self.flight_frame_override = frame;
     }
 
     /// Makes [`WideRenderer::render_hd`] draw the art of `pack` (`None`: none).
@@ -545,6 +554,28 @@ impl WideRenderer {
         check_frame(log)?;
         let scene = classify_with(rom, game_mode, field, log, self.trust_field);
         self.update_flight_state(scene, field);
+        static FLIGHT_INPUT_REPORTED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if !FLIGHT_INPUT_REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            let mode7_lines = log
+                .entries
+                .iter()
+                .filter(|entry| !entry.regs.forced_blanking && entry.regs.bg_mode == 7)
+                .count();
+            let mode7_bg1_main_lines = log
+                .entries
+                .iter()
+                .filter(|entry| {
+                    !entry.regs.forced_blanking && entry.regs.bg_mode == 7 && entry.regs.main_bg[0]
+                })
+                .count();
+            log::info!(
+                "flight renderer probe: mode=${game_mode:02X}, field_flying={}, scene={scene:?}, mode7_lines={mode7_lines}, mode7_bg1_main_lines={mode7_bg1_main_lines}, active={}, flight_tick={}",
+                field.is_some_and(|state| state.flying),
+                scene == Scene::Flight || field.is_some_and(|state| state.flying),
+                self.flight_frame
+            );
+        }
         self.mapped =
             scene == Scene::Bordered && field.is_some_and(|state| shows_map(rom, state, log));
         let scale = hd.scale as usize;
@@ -732,9 +763,10 @@ impl WideRenderer {
         self.compose(rom, Some(state), log, options, Scene::Field, None, 0, None)
     }
 
-    /// Updates the flight heading and advances the roll exactly once for each rendered flight frame.
+    /// Updates the flight heading and advances its local clock for direct renderer users.
     fn update_flight_state(&mut self, scene: Scene, field: Option<&FieldState>) {
         let active = scene == Scene::Flight || field.is_some_and(|state| state.flying);
+        let was_active = self.flight_active;
         if let Some(state) = field.filter(|state| state.flying) {
             if let Some(previous) = self.flight_last_leader {
                 let dx = i32::from(state.leader.0) - i32::from(previous.0);
@@ -750,7 +782,19 @@ impl WideRenderer {
         } else {
             self.flight_last_leader = None;
         }
-        self.flight_frame = if active { self.flight_frame.wrapping_add(1) } else { 0 };
+        self.flight_active = active;
+        self.flight_frame = match self.flight_frame_override.take() {
+            Some(frame) if active => frame % 180,
+            Some(_) => 0,
+            None if active => {
+                if was_active {
+                    self.flight_frame.wrapping_add(1)
+                } else {
+                    0
+                }
+            }
+            None => 0,
+        };
     }
 
     /// Renders any frame of `log` in the wide view: as the field where the field's map is on
@@ -970,8 +1014,10 @@ impl WideRenderer {
         wide.frame = frame;
         // Free flight is the field scene with the cartridge's $01BC flight bit set; story
         // transitions use the separate Mode 7 scene. Both need the same volumetric OAM pass.
-        if self.flight_volumes && (scene == Scene::Flight || state.is_some_and(|field| field.flying)) {
-            project_flight_objects(log, &mut wide, self.flight_heading, flight_roll(self.flight_frame));
+        if self.flight_volumes
+            && (scene == Scene::Flight || state.is_some_and(|field| field.flying))
+        {
+            project_flight_objects(log, &mut wide, self.flight_heading, self.flight_frame);
         }
         self.extras = extras;
         Ok(wide)
@@ -986,12 +1032,26 @@ impl WideRenderer {
 /// pixels under the projected entities. Unsupported or incomplete captures keep the normal frame.
 /// Rebuilds each flight OAM entity as a variable-thickness sprite stack and projects it
 /// with perspective. The Mode 7 plane and all non-object pixels remain on the original path.
-fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame, flight_heading: f32, flight_roll: f32) {
+fn project_flight_objects(
+    log: &FrameLog,
+    wide: &mut WideFrame,
+    flight_heading: f32,
+    flight_frame: u32,
+) {
     use crate::art::poses::{self, View};
     use crate::sprite_volume::{PerspectiveCamera, RgbaFrame, SpriteVolume};
 
     let entities = poses::entity_poses_in(log, &View::window());
-    if entities.is_empty() { return; }
+    if entities.is_empty() {
+        static EMPTY_OAM_REPORTED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if !EMPTY_OAM_REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            log::warn!(
+                "flight OAM projection: no eligible sprite entities at flight_tick={flight_frame}"
+            );
+        }
+        return;
+    }
 
     // Preserve the cartridge's Mode 7 background while clearing only OAM objects.
     let mut background_log = log.clone();
@@ -999,11 +1059,31 @@ fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame, flight_heading: 
         background_log.oam_low[sprite * 4 + 1] = 0xF0;
     }
     background_log.oam_writes.clear();
-    let Ok(background) = Renderer::new().render(&background_log) else { return };
+    let background = match Renderer::new().render(&background_log) {
+        Ok(background) => background,
+        Err(error) => {
+            static BACKGROUND_FAILURE_REPORTED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !BACKGROUND_FAILURE_REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                log::warn!("flight OAM projection: could not redraw background: {error:?}");
+            }
+            return;
+        }
+    };
 
     let frame_width = wide.frame.width;
     let window_x = wide.logical.x.max(0) as usize;
-    if window_x + background.width > frame_width { return; }
+    if window_x + background.width > frame_width {
+        static FRAME_SIZE_FAILURE_REPORTED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if !FRAME_SIZE_FAILURE_REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            log::warn!(
+                "flight OAM projection: frame bounds mismatch (frame_width={frame_width}, window_x={window_x}, background_width={})",
+                background.width
+            );
+        }
+        return;
+    }
     let height = wide.frame.height.min(background.height);
     for y in 0..height {
         let target = y * frame_width + window_x;
@@ -1013,6 +1093,10 @@ fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame, flight_heading: 
     }
 
     // Draw entities in reverse OAM order: object zero remains visually foremost.
+    let mut projected_entities = 0;
+    let mut volume_failures = 0;
+    let mut projection_failures = 0;
+    let mut drawn_pixels = 0;
     for entity in entities.iter().rev() {
         const PAD: usize = 18;
         const MAX_HALF_DEPTH: usize = 7;
@@ -1020,7 +1104,9 @@ fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame, flight_heading: 
         let height_src = entity.h + PAD * 2;
         let mut rgba = vec![[0, 0, 0, 0]; width * height_src];
         for (at, &index) in entity.arr.iter().enumerate() {
-            if index == 0 { continue; }
+            if index == 0 {
+                continue;
+            }
             let cgram = 128 + usize::from(entity.palette) * 16 + usize::from(index);
             let Some(&colour) = log.cgram_start.get(cgram) else { continue };
             let [r, g, b] = poses::rgb555(colour);
@@ -1028,9 +1114,22 @@ fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame, flight_heading: 
             let y = at / entity.w + PAD;
             rgba[y * width + x] = [r, g, b, 255];
         }
-        let Ok(source) = RgbaFrame::new(width, height_src, rgba) else { continue };
+        let source = match RgbaFrame::new(width, height_src, rgba) {
+            Ok(source) => source,
+            Err(_) => {
+                volume_failures += 1;
+                continue;
+            }
+        };
 
-        let Ok(volume) = SpriteVolume::from_flight_silhouette_with_depth(&source, MAX_HALF_DEPTH) else { continue };
+        let volume = match SpriteVolume::from_flight_silhouette_with_depth(&source, MAX_HALF_DEPTH)
+        {
+            Ok(volume) => volume,
+            Err(_) => {
+                volume_failures += 1;
+                continue;
+            }
+        };
         let focal = (width.max(height_src) as f32) * 2.2;
         let camera = PerspectiveCamera {
             yaw: 0.78 + flight_heading,
@@ -1041,22 +1140,65 @@ fn project_flight_objects(log: &FrameLog, wide: &mut WideFrame, flight_heading: 
             height: height_src,
             near_plane: 0.1,
         };
-        let Ok(projected) = crate::sprite_volume::project_perspective_with_roll(&volume, camera, flight_roll) else { continue };
+        let roll = flight_roll(flight_frame);
+        let projected =
+            match crate::sprite_volume::project_perspective_with_roll(&volume, camera, roll) {
+                Ok(projected) => projected,
+                Err(_) => {
+                    projection_failures += 1;
+                    continue;
+                }
+            };
+        projected_entities += 1;
 
         let left = window_x as i32 + entity.org.0 - PAD as i32;
         let top = entity.org.1 - PAD as i32;
         for y in 0..projected.height {
             let screen_y = top + y as i32;
-            if screen_y < 0 || screen_y >= height as i32 { continue; }
+            if screen_y < 0 || screen_y >= height as i32 {
+                continue;
+            }
             for x in 0..projected.width {
                 let screen_x = left + x as i32;
-                if screen_x < 0 || screen_x >= frame_width as i32 { continue; }
+                if screen_x < 0 || screen_x >= frame_width as i32 {
+                    continue;
+                }
                 let pixel = projected.pixels[y * projected.width + x];
-                if pixel[3] == 0 { continue; }
+                if pixel[3] == 0 {
+                    continue;
+                }
                 wide.frame.pixels[screen_y as usize * frame_width + screen_x as usize] =
                     Color::rgb(pixel[0], pixel[1], pixel[2]);
+                drawn_pixels += 1;
             }
         }
+    }
+
+    static OAM_PROJECTION_REPORTED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    if !OAM_PROJECTION_REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        let entity_count = entities.len();
+        let candidates = entities
+            .iter()
+            .take(8)
+            .map(|entity| {
+                format!(
+                    "oam={:#034x},palette={},size={}x{},at={:?}",
+                    entity.sprites, entity.palette, entity.w, entity.h, entity.org
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        log::info!(
+            "flight OAM projection: tick={flight_frame}, roll={:.3}, entities={}, projected={}, volume_failures={}, projection_failures={}, pixels_drawn={}, candidates=[{}]",
+            flight_roll(flight_frame),
+            entity_count,
+            projected_entities,
+            volume_failures,
+            projection_failures,
+            drawn_pixels,
+            candidates
+        );
     }
 }
 
@@ -1325,6 +1467,7 @@ struct DrawJob {
     rom: Arc<[u8]>,
     game_mode: u8,
     field: Option<FieldState>,
+    flight_frame: Option<u32>,
     log: FrameLog,
     options: WideOptions,
     hd: HdOptions,
@@ -1352,6 +1495,7 @@ impl Worker {
                 }
                 while let Ok(mut job) = job_queue.recv() {
                     let rom = Rom(&job.rom);
+                    job.renderer.set_flight_frame(job.flight_frame);
                     let picture = job
                         .renderer
                         .render_hd(
@@ -1402,6 +1546,10 @@ pub struct WideRun {
     /// What the last frame skipped ([`WideRun::skip`]) started from, until it is drawn after all
     /// ([`WideRun::redraw`]) or another frame is noted.
     skipped: Option<Started>,
+    /// The machine's emulated frame and the first frame of the current flight, when driven by an app.
+    emulated_frame: Option<u64>,
+    flight_started_at: Option<u64>,
+    flight_active: bool,
     /// With a translation ([`WideRun::set_overlay`]): the page the message engine named at the end of the last
     /// frame noted, and the one the frame being drawn started from.
     text: Option<TextRun>,
@@ -1498,9 +1646,37 @@ impl WideRun {
             worker_start: None,
             ended: None,
             skipped: None,
+            emulated_frame: None,
+            flight_started_at: None,
+            flight_active: false,
             text: None,
             shared: None,
         }
+    }
+
+    /// Supplies every emulated frame, including frames whose pictures are skipped.
+    pub fn set_emulated_frame(&mut self, wram: &[u8], frame: u64) {
+        let mode = wram.get(GAME_MODE).copied().unwrap_or(0);
+        let field_flags = wram.get(0x01BC).copied().unwrap_or(0);
+        let active = mode == 0x07 || (mode & 0x7F == 0x06 && field_flags & 1 != 0);
+        let rewound = self.emulated_frame.is_some_and(|previous| frame < previous);
+        if active && (!self.flight_active || rewound) {
+            self.flight_started_at = Some(frame);
+        } else if !active {
+            self.flight_started_at = None;
+        }
+        self.emulated_frame = Some(frame);
+        self.flight_active = active;
+    }
+
+    fn flight_tick(&self, started: &Started) -> Option<u32> {
+        let active = started.0 == 0x07 || started.1.as_ref().is_some_and(|field| field.flying);
+        if !active {
+            return None;
+        }
+        let frame = self.emulated_frame?;
+        let start = self.flight_started_at.unwrap_or(frame);
+        Some(frame.saturating_sub(start).rem_euclid(180) as u32)
     }
 
     /// Draws the translation of `overlay` over the original's message windows in the Enhanced pictures (`None`:
@@ -1582,12 +1758,16 @@ impl WideRun {
     /// and the frame was logged from its start. Returns the frame's 16:9 view ([`WIDTH_16_9`]
     /// wide), or `None` when there is no log or the frame is one the renderer refuses.
     pub fn note(&mut self, wram: &[u8], log: Option<&FrameLog>) -> Option<WideFrame> {
-        let (game_mode, field, _) = self.advance(wram);
+        let started = self.advance(wram);
         self.skipped = None;
         let log = log?;
+        let flight_frame = self.flight_tick(&started);
+        let (game_mode, field, _) = started;
         let options = WideOptions { width: WIDTH_16_9, hud: HudPlacement::Window };
         let rom = Arc::clone(&self.rom);
-        self.renderer().render_view(Rom(&rom), game_mode, field.as_ref(), log, options).ok()
+        let renderer = self.renderer();
+        renderer.set_flight_frame(flight_frame);
+        renderer.render_view(Rom(&rom), game_mode, field.as_ref(), log, options).ok()
     }
 
     /// [`WideRun::note`], as the Enhanced picture at the scale and look of `hd`, with the pack's
@@ -1598,13 +1778,16 @@ impl WideRun {
         log: Option<&FrameLog>,
         hd: HdOptions,
     ) -> Option<WideHd> {
-        let (game_mode, field, conditions) = self.advance(wram);
+        let started = self.advance(wram);
         self.skipped = None;
         let log = log?;
+        let flight_frame = self.flight_tick(&started);
+        let (game_mode, field, conditions) = started;
         let options = WideOptions { width: WIDTH_16_9, hud: HudPlacement::Window };
         let rom = Arc::clone(&self.rom);
         self.hand_text();
         let renderer = self.renderer();
+        renderer.set_flight_frame(flight_frame);
         renderer.set_conditions(conditions);
         renderer.render_hd(Rom(&rom), game_mode, field.as_ref(), log, options, hd).ok()
     }
@@ -1640,6 +1823,7 @@ impl WideRun {
         let text = self.text.as_ref().and_then(|text| text.started.clone());
         let flight = matches!(started.0, 0x06 | 0x07)
             || started.1.as_ref().is_some_and(|field| field.flying);
+        let flight_frame = self.flight_tick(&started);
         // A flight image changes with the 180-frame roll even when the cartridge's OAM and
         // Mode 7 registers are otherwise identical, so it must not reuse a previous picture.
         if !flight
@@ -1653,6 +1837,7 @@ impl WideRun {
         let rom = Arc::clone(&self.rom);
         self.hand_text();
         let renderer = self.renderer();
+        renderer.set_flight_frame(flight_frame);
         renderer.set_conditions(conditions);
         let picture =
             renderer.render_hd(Rom(&rom), game_mode, field.as_ref(), log, options, hd).ok()?;
@@ -1674,19 +1859,26 @@ impl WideRun {
     /// what [`WideRun::note`] would have returned for it. `None` when no frame was skipped since
     /// the last one noted, or there is no log or the frame is one the renderer refuses.
     pub fn redraw(&mut self, log: Option<&FrameLog>) -> Option<WideFrame> {
-        let (game_mode, field, _) = self.skipped.take()?;
+        let started = self.skipped.take()?;
+        let flight_frame = self.flight_tick(&started);
+        let (game_mode, field, _) = started;
         let options = WideOptions { width: WIDTH_16_9, hud: HudPlacement::Window };
         let rom = Arc::clone(&self.rom);
-        self.renderer().render_view(Rom(&rom), game_mode, field.as_ref(), log?, options).ok()
+        let renderer = self.renderer();
+        renderer.set_flight_frame(flight_frame);
+        renderer.render_view(Rom(&rom), game_mode, field.as_ref(), log?, options).ok()
     }
 
     /// [`WideRun::redraw`] as the Enhanced picture ([`WideRun::note_hd`]).
     pub fn redraw_hd(&mut self, log: Option<&FrameLog>, hd: HdOptions) -> Option<WideHd> {
-        let (game_mode, field, conditions) = self.skipped.take()?;
+        let started = self.skipped.take()?;
+        let flight_frame = self.flight_tick(&started);
+        let (game_mode, field, conditions) = started;
         let options = WideOptions { width: WIDTH_16_9, hud: HudPlacement::Window };
         let rom = Arc::clone(&self.rom);
         self.hand_text();
         let renderer = self.renderer();
+        renderer.set_flight_frame(flight_frame);
         renderer.set_conditions(conditions);
         renderer.render_hd(Rom(&rom), game_mode, field.as_ref(), log?, options, hd).ok()
     }
@@ -1733,10 +1925,12 @@ impl WideRun {
             Settled::Done(picture) => picture,
             Settled::Idle => None,
         };
-        let started = self.skipped.take().zip(log).map(|((game_mode, field, conditions), log)| {
-            (game_mode, field, conditions, log.clone())
+        let started = self.skipped.take().zip(log).map(|(started, log)| {
+            let flight_frame = self.flight_tick(&started);
+            let (game_mode, field, conditions) = started;
+            (game_mode, field, conditions, flight_frame, log.clone())
         });
-        let Some((game_mode, field, conditions, log)) = started else {
+        let Some((game_mode, field, conditions, flight_frame, log)) = started else {
             return previous;
         };
         let options = WideOptions { width: WIDTH_16_9, hud: HudPlacement::Window };
@@ -1744,9 +1938,10 @@ impl WideRun {
         self.hand_text();
         let mut renderer =
             self.renderer.take().expect("the renderer is back once the drawing is done");
+        renderer.set_flight_frame(flight_frame);
         renderer.set_conditions(conditions);
         self.start_worker();
-        let job = DrawJob { renderer, rom, game_mode, field, log, options, hd };
+        let job = DrawJob { renderer, rom, game_mode, field, flight_frame, log, options, hd };
         let worker = self.worker.as_ref().expect("the worker is started");
         worker.jobs.send(job).expect("the worker of the pictures is running");
         self.drawing = true;
@@ -3146,6 +3341,30 @@ mod tests {
         assert!(flight_roll(179) > 6.2);
         assert!(close(flight_roll(180), 0.0));
         assert!(close(flight_roll(360), 0.0));
+    }
+
+    #[test]
+    fn flight_tick_follows_emulated_frames_including_skipped_frames() {
+        let rom = rom();
+        let mut run = WideRun::new(&rom);
+        let mut wram = vec![0; 0x20000];
+        wram[0x24] = 0x06;
+        wram[0x01BC] = 1;
+        let mut field = state(2, (0, 0), &[]);
+        field.flying = true;
+        let started = (0x06, Some(field), Conditions::default());
+
+        run.set_emulated_frame(&wram, 100);
+        assert_eq!(run.flight_tick(&started), Some(0));
+        run.set_emulated_frame(&wram, 145);
+        assert_eq!(run.flight_tick(&started), Some(45));
+        run.set_emulated_frame(&wram, 280);
+        assert_eq!(run.flight_tick(&started), Some(0));
+
+        wram[0x01BC] = 0;
+        run.set_emulated_frame(&wram, 281);
+        assert_eq!(run.flight_tick(&(0x06, None, Conditions::default())), None);
+        assert_eq!(run.flight_tick(&(0x87, None, Conditions::default())), None);
     }
 
     #[test]

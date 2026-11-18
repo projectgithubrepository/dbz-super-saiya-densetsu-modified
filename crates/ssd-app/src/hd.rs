@@ -572,6 +572,11 @@ impl Hd {
         self.wide.note_hd_shared(wram, log, options)
     }
 
+    /// Supplies the frame the machine has emulated, including frames whose pictures are skipped.
+    pub fn set_emulated_frame(&mut self, wram: &[u8], frame: u64) {
+        self.wide.set_emulated_frame(wram, frame);
+    }
+
     /// A frame that ran and is not drawn (a fast-forward's frame the window never shows): the 16:9
     /// view only follows its work RAM, so the frame drawn next starts from the right state.
     pub fn skip_frame(&mut self, wram: &[u8]) {
