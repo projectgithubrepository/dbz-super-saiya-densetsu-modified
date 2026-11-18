@@ -41,4 +41,4 @@ jobs:
           if-no-files-found: error
 
       - name: Run sprite-stack tests
-        run: cargo test -p ssd-hd silhouette_tests
+        run: cargo test -p ssd-hd
