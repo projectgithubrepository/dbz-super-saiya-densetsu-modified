@@ -189,19 +189,16 @@ impl Renderer {
         // Do not gate the 3D test on a second, brittle PPU-register signature: flight
         // transitions can change those registers between scanlines and suppress the effect.
         let flight_heading = self.flight_active.then_some(self.flight_heading);
-        // One complete somersault every three seconds at the SNES frame rate (60 Hz).
-        // This phase affects only the volumetric sprite projection, never game state or Mode 7.
+        // One complete somersault every three seconds of emulated game time (60 Hz).
+        // Fast-forward and display refresh rate therefore cannot change the animation speed.
         let flight_spin = flight_heading.map(|_| {
             const SPIN_PERIOD_FRAMES: u64 = 180;
-            let phase = (self.flight_spin_frame % SPIN_PERIOD_FRAMES) as f32
+            let started = self.flight_start_frame.unwrap_or(self.flight_frame);
+            let elapsed = self.flight_frame.saturating_sub(started);
+            (elapsed % SPIN_PERIOD_FRAMES) as f32
                 / SPIN_PERIOD_FRAMES as f32
-                * std::f32::consts::TAU;
-            self.flight_spin_frame = self.flight_spin_frame.wrapping_add(1);
-            phase
+                * std::f32::consts::TAU
         });
-        if flight_heading.is_none() {
-            self.flight_spin_frame = 0;
-        }
         let adjusted_log = flight_heading.map(|heading| flight_perspective_log(log, heading));
         let log = adjusted_log.as_ref().unwrap_or(log);
         if self.art.as_ref().is_some_and(|art| art.has_art()) {
@@ -884,7 +881,7 @@ mod tests {
         let options = HdOptions { scale: 1, look: Look::Pixel };
         let ordinary = Renderer::new().render_hd(&log, options).unwrap();
         let mut flight = Renderer::new();
-        flight.set_flight_state(true, -std::f32::consts::FRAC_PI_2);
+        flight.set_flight_state(true, -std::f32::consts::FRAC_PI_2, 0);
         let perspective = flight.render_hd(&log, options).unwrap();
         assert_ne!(ordinary.rgba, perspective.rgba);
     }
@@ -1329,7 +1326,7 @@ fn apply_sprite_stacks(
             } else {
                 0.18
             },
-            distance: if flight_heading.is_some() { focal * 0.92 } else { sprite_camera_distance(focal, false) },
+            distance: sprite_camera_distance(focal, flight_heading.is_some()),
             focal_length: focal, width, height, near_plane: 0.1,
         };
         let projected_result = if let Some(spin) = flight_spin {
@@ -1344,9 +1341,11 @@ fn apply_sprite_stacks(
 
     // Report the first real frame's conversion counts once. This distinguishes a renderer
     // path/pose-classification failure from a projection that runs but looks too subtle.
-    static REPORTED: std::sync::atomic::AtomicBool =
+    static FLIGHT_REPORTED: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
-    if !REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+    if flight_heading.is_some()
+        && !FLIGHT_REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed)
+    {
         log::warn!(
             "sprite stacking: frame={}x{}, flight={}, OAM sprites={}, poses={}, eligible={}, effects={}, unions={}, converted={}, volume/projection failures={}, hidden-mask={:#034x}",
             frame.width, frame.height, flight_heading.is_some(), sprites.len(), poses.len(), eligible,
