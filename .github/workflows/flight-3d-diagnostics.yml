@@ -1,5 +1,9 @@
 name: Flight 3D diagnostics (Windows)
 
+concurrency:
+  group: flight-3d-diagnostics-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches:
