@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# Several commits in quick succession must not compile the same project in parallel.
+concurrency:
+  group: linux-build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   linux:
     runs-on: ubuntu-24.04
@@ -32,7 +37,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run HD renderer tests
-        run: cargo test -p ssd-hd --locked
+        run: cargo test -p ssd-hd --release --locked
 
       - name: Build Linux executable
         run: cargo build -p ssd-app --release --locked
