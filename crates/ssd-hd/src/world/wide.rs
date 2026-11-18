@@ -1326,14 +1326,19 @@ fn project_flight_objects(
                 continue;
             }
         };
+        // Render into a 2x canvas and double the focal length so the projected
+        // character remains large enough to inspect in the original SNES frame.
+        // Keep the projection centred on the entity's original OAM bounds.
         let focal = (width.max(height_src) as f32) * 2.2;
+        let output_width = width.saturating_mul(2);
+        let output_height = height_src.saturating_mul(2);
         let camera = PerspectiveCamera {
             yaw: 0.78 + flight_heading,
             pitch: 0.18,
             distance: focal * 2.8,
-            focal_length: focal,
-            width,
-            height: height_src,
+            focal_length: focal * 2.0,
+            width: output_width,
+            height: output_height,
             near_plane: 0.1,
         };
         let roll = flight_roll(flight_frame);
@@ -1347,8 +1352,8 @@ fn project_flight_objects(
             };
         projected_entities += 1;
 
-        let left = window_x as i32 + entity.org.0 - PAD as i32;
-        let top = entity.org.1 - PAD as i32;
+        let left = window_x as i32 + entity.org.0 - PAD as i32 - (width as i32 / 2);
+        let top = entity.org.1 - PAD as i32 - (height_src as i32 / 2);
         for y in 0..projected.height {
             let screen_y = top + y as i32;
             if screen_y < 0 || screen_y >= height as i32 {
