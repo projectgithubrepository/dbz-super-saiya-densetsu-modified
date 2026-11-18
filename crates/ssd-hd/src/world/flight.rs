@@ -57,6 +57,13 @@ impl Default for FlightState3D {
     }
 }
 
+/// Heading in map space (X right, Z down) from the last movement step.
+/// Returns `None` while stationary so callers can retain the previous heading.
+#[must_use]
+pub fn heading_from_delta(dx: i32, dz: i32) -> Option<f32> {
+    if dx == 0 && dz == 0 { None } else { Some((dz as f32).atan2(dx as f32)) }
+}
+
 impl FlightState3D {
     #[must_use]
     pub fn from_legacy(map_x: u16, map_y: u16) -> Self {
@@ -125,6 +132,14 @@ pub struct FlightCamera { pub position: Vec3, pub target: Vec3 }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn heading_tracks_actual_map_movement_and_stays_undefined_when_stationary() {
+        assert_eq!(heading_from_delta(0, 0), None);
+        assert_eq!(heading_from_delta(10, 0), Some(0.0));
+        assert!((heading_from_delta(0, 10).unwrap() - std::f32::consts::FRAC_PI_2).abs() < 0.0001);
+        assert!((heading_from_delta(-10, 0).unwrap().abs() - std::f32::consts::PI).abs() < 0.0001);
+    }
 
     #[test]
     fn acceleration_moves_forward_deterministically() {
