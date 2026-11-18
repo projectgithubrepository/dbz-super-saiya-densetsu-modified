@@ -578,8 +578,10 @@ impl WideRenderer {
                 let tile = u16::from(low[2]) | (u16::from(attr & 1) << 8);
                 let x9 = u16::from(low[0]) | (u16::from(high & 1) << 8);
                 let x = if x9 >= 256 { i32::from(x9) - 512 } else { i32::from(x9) };
+                let line = u16::from(y.wrapping_add(1));
                 let size_index = log.entries.iter()
-                    .find(|entry| !entry.regs.forced_blanking)
+                    .find(|entry| entry.sprites.eval_line == line && !entry.sprites.blank)
+                    .or_else(|| log.entries.iter().find(|entry| !entry.sprites.blank))
                     .map_or(0, |entry| entry.sprites.fetch_size);
                 let (small, large) = match size_index {
                     0 => ((8, 8), (16, 16)),
