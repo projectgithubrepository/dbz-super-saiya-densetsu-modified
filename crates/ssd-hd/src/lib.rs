@@ -186,8 +186,10 @@ pub struct Renderer {
     /// The active cartridge flight state and camera heading supplied by the game loop.
     flight_active: bool,
     flight_heading: f32,
-    /// Render-frame phase for the flight-only volumetric somersault animation.
-    flight_spin_frame: u64,
+    /// Current emulated frame and the frame at which the current flight began.
+    /// The somersault is tied to game time, not window redraw frequency.
+    flight_frame: u64,
+    flight_start_frame: Option<u64>,
     /// The HD text font, when the pictures draw their text from it (see [`Renderer::set_font`]).
     font: Option<Arc<Font>>,
     /// The text cells of the frame being drawn, noted while `text_on`.
@@ -221,7 +223,8 @@ impl Renderer {
             sprite_stacking: false,
             flight_active: false,
             flight_heading: 0.0,
-            flight_spin_frame: 0,
+            flight_frame: 0,
+            flight_start_frame: None,
             font: None,
             text: font::TextCapture::default(),
             text_on: false,
@@ -243,7 +246,13 @@ impl Renderer {
 
     /// Supplies the original game's flight flag and heading derived from its live map movement.
     /// Flight rendering is opt-in and never changes the machine's gameplay state.
-    pub fn set_flight_state(&mut self, active: bool, heading: f32) {
+    pub fn set_flight_state(&mut self, active: bool, heading: f32, frame: u64) {
+        if active && !self.flight_active {
+            self.flight_start_frame = Some(frame);
+        } else if !active {
+            self.flight_start_frame = None;
+        }
+        self.flight_frame = frame;
         self.flight_active = active;
         self.flight_heading = if heading.is_finite() { heading } else { 0.0 };
     }
