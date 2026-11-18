@@ -1774,6 +1774,7 @@ struct Enhanced {
     refused: bool,
     last_flight_leader: Option<(u16, u16)>,
     flight_heading: f32,
+    flight_active: bool,
 }
 
 impl Enhanced {
@@ -1782,7 +1783,7 @@ impl Enhanced {
         renderer.set_sprite_stacking(true);
         renderer.set_art(hd_art::pack(rom));
         renderer.set_font(hd_art::font(rom));
-        Self { renderer, options, refused: false, last_flight_leader: None, flight_heading: -std::f32::consts::FRAC_PI_2 }
+        Self { renderer, options, refused: false, last_flight_leader: None, flight_heading: -std::f32::consts::FRAC_PI_2, flight_active: false }
     }
 
     /// The Enhanced picture of the machine's last frame, or `None` when there is none to draw: the
@@ -1832,7 +1833,14 @@ impl Enhanced {
             // forward camera; never derive a heading from stale field coordinates.
             self.flight_heading = -std::f32::consts::FRAC_PI_2;
         }
-        self.renderer.set_flight_state(flight_active, self.flight_heading);
+        if flight_active != self.flight_active {
+            log::info!(
+                "flight render state: active={}, mode=\u{24}{:02X}, field_flags=\u{24}{:02X}, story={}, free={}",
+                flight_active, mode, field_flags, story_flight, free_flight
+            );
+            self.flight_active = flight_active;
+        }
+        self.renderer.set_flight_state(flight_active, self.flight_heading, machine.frame_count());
         let log = machine.frame_log()?;
         match self.renderer.render_hd(log, self.options) {
             Ok(picture) => Some(picture),
