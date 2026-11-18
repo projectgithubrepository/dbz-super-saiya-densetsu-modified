@@ -868,3 +868,40 @@ mod silhouette_tests {
         assert!(volume.slices.iter().any(|slice| slice.pixels[3 * 7 + 3][3] != 0));
     }
 }
+
+
+#[cfg(test)]
+mod object_roll_tests {
+    use super::*;
+
+    #[test]
+    fn object_space_roll_changes_the_projected_silhouette() {
+        let mut pixels = vec![[0, 0, 0, 0]; 5 * 5];
+        for y in 1..4 {
+            pixels[y * 5 + 2] = [240, 180, 40, 255];
+        }
+        let frame = RgbaFrame::new(5, 5, pixels).unwrap();
+        let volume = SpriteVolume::extrude(&frame, 5).unwrap();
+        let camera = PerspectiveCamera {
+            yaw: 0.0,
+            pitch: 0.0,
+            distance: 30.0,
+            focal_length: 10.0,
+            width: 15,
+            height: 15,
+            near_plane: 0.1,
+        };
+        let upright = project_perspective_with_roll(&volume, camera, 0.0).unwrap();
+        let flipped = project_perspective_with_roll(
+            &volume, camera, std::f32::consts::FRAC_PI_2
+        ).unwrap();
+        let vertical_extent = |image: &RgbaFrame| {
+            let rows: Vec<usize> = (0..image.height)
+                .filter(|&y| image.pixels[y * image.width..(y + 1) * image.width]
+                    .iter().any(|pixel| pixel[3] != 0))
+                .collect();
+            rows.last().unwrap() - rows.first().unwrap() + 1
+        };
+        assert_ne!(vertical_extent(&upright), vertical_extent(&flipped));
+    }
+}
